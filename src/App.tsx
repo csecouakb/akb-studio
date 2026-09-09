@@ -3,14 +3,14 @@ import type { ChangeEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
-type VoicePreset = 'Raw Clean' | 'Studio' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
+type VoicePreset = 'Raw Clean' | 'Studio' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'Dolby Style' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
 type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono' | 'Mystery Blur'
 type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | 'Custom'
 type Segment = { id: number; start: number; end: number }
 type Crop = { x: number; y: number; width: number; height: number }
 type EditSnapshot = { segments: Segment[]; crop: Crop }
 
-const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
+const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'Dolby Style', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
 const filterPresets: FilterPreset[] = ['None', 'Vivid', 'Warm', 'Cool', 'Mono', 'Mystery Blur']
 const voiceSettings: Record<VoicePreset, { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number }> = {
   'Raw Clean': { gain: 100, bass: 0, treble: 1, compression: 25, reverb: 0, echo: 0 },
@@ -18,6 +18,7 @@ const voiceSettings: Record<VoicePreset, { gain: number; bass: number; treble: n
   'Clear Vocal': { gain: 106, bass: -1, treble: 5, compression: 62, reverb: 7, echo: 0 },
   'Warm Vocal': { gain: 105, bass: 4, treble: -1, compression: 42, reverb: 10, echo: 0 },
   Unplugged: { gain: 103, bass: 2, treble: 2, compression: 34, reverb: 16, echo: 0 },
+  'Dolby Style': { gain: 108, bass: 3, treble: 4, compression: 64, reverb: 18, echo: 4 },
   'Soft Reverb': { gain: 100, bass: 1, treble: 2, compression: 35, reverb: 24, echo: 0 },
   'Studio Reverb': { gain: 103, bass: 2, treble: 3, compression: 48, reverb: 36, echo: 0 },
   'Hall Reverb': { gain: 100, bass: 1, treble: 1, compression: 32, reverb: 58, echo: 0 },
@@ -392,11 +393,18 @@ export default function App() {
     const mimeType = MediaRecorder.isTypeSupported(mp4Type) ? mp4Type : MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm'
     const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: exportQuality === 1080 ? 8_000_000 : 5_000_000 })
     const chunks: Blob[] = []; recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
-    setExporting(true); setExportProgress(0); recorder.start(1000)
+    setExporting(true); setExportProgress(0)
     const total = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0); let completed = 0
-    for (const segment of segments) {
-      video.currentTime = segment.start; await waitForSeek(video); await video.play()
-      await new Promise<void>(resolve => { const frame = () => { drawExportFrame(canvas); const elapsed = Math.min(video.currentTime, segment.end) - segment.start; setExportProgress(Math.round((completed + elapsed) / total * 100)); if (video.currentTime >= segment.end || video.ended) { video.pause(); resolve() } else { if (video.paused) void video.play(); requestAnimationFrame(frame) } }; frame() })
+    video.playbackRate = speed
+    await seekVideo(video, segments[0].start); drawExportFrame(canvas); recorder.start(1000)
+    for (const [segmentIndex, segment] of segments.entries()) {
+      if (segmentIndex > 0) {
+        if (recorder.state === 'recording') recorder.pause()
+        await seekVideo(video, segment.start); drawExportFrame(canvas)
+        if (recorder.state === 'paused') recorder.resume()
+      }
+      await video.play()
+      await new Promise<void>(resolve => { const frame = () => { drawExportFrame(canvas); const elapsed = Math.max(0, Math.min(video.currentTime, segment.end) - segment.start); setExportProgress(Math.round((completed + elapsed) / total * 100)); if (video.currentTime >= segment.end || video.ended) { video.pause(); resolve() } else { if (video.paused) void video.play(); scheduleVideoFrame(video, frame) } }; scheduleVideoFrame(video, frame) })
       completed += segment.end - segment.start
     }
     recorder.stop(); await new Promise<void>(resolve => { recorder.onstop = () => resolve() })
@@ -445,9 +453,18 @@ function createImpulse(context: AudioContext, seconds: number, decay: number) {
   return impulse
 }
 
-function waitForSeek(video: HTMLVideoElement) {
-  if (video.readyState >= 2) return Promise.resolve()
-  return new Promise<void>(resolve => video.addEventListener('seeked', () => resolve(), { once: true }))
+function seekVideo(video: HTMLVideoElement, time: number) {
+  if (Math.abs(video.currentTime - time) < .01 && !video.seeking) return Promise.resolve()
+  return new Promise<void>(resolve => {
+    video.addEventListener('seeked', () => resolve(), { once: true })
+    video.currentTime = time
+  })
+}
+
+function scheduleVideoFrame(video: HTMLVideoElement, callback: () => void) {
+  const frameVideo = video as HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number }
+  if (frameVideo.requestVideoFrameCallback) frameVideo.requestVideoFrameCallback(callback)
+  else requestAnimationFrame(callback)
 }
 
 function drawCover(context: CanvasRenderingContext2D, image: CanvasImageSource & { width: number; height: number }, width: number, height: number) {
