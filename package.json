@@ -12,6 +12,7 @@
     "@vitejs/plugin-react": "latest",
     "fix-webm-duration": "1.0.6",
     "lucide-react": "latest",
+    "mediabunny": "1.56.0",
     "react": "latest",
     "react-dom": "latest"
   },
