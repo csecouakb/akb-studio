@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ChangeEvent } from 'react'
-import { Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, RotateCcw, Scissors, SlidersHorizontal, Trash2, Upload, Volume2 } from 'lucide-react'
+import type { ChangeEvent, PointerEvent as ReactPointerEvent } from 'react'
+import { Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
 type VoicePreset = 'Raw Clean' | 'Studio' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
 type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono'
 type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | 'Custom'
 type Segment = { id: number; start: number; end: number }
+type Crop = { x: number; y: number; width: number; height: number }
+type EditSnapshot = { segments: Segment[]; crop: Crop }
 
 const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
 const filterPresets: FilterPreset[] = ['None', 'Vivid', 'Warm', 'Cool', 'Mono']
@@ -40,6 +42,8 @@ export default function App() {
   const exportAudioRef = useRef<MediaStreamAudioDestinationNode | null>(null)
   const backgroundImageRef = useRef<HTMLImageElement | null>(null)
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const cropDragRef = useRef<{ mode: 'move' | 'se' | 'sw' | 'ne' | 'nw'; startX: number; startY: number; crop: Crop } | null>(null)
 
   const [videoUrl, setVideoUrl] = useState('')
   const [fileName, setFileName] = useState('')
@@ -52,6 +56,9 @@ export default function App() {
   const [segments, setSegments] = useState<Segment[]>([])
   const [selectedSegment, setSelectedSegment] = useState(0)
   const [magnet, setMagnet] = useState(true)
+  const [crop, setCrop] = useState<Crop>({ x: 0, y: 0, width: 1, height: 1 })
+  const [undoStack, setUndoStack] = useState<EditSnapshot[]>([])
+  const [redoStack, setRedoStack] = useState<EditSnapshot[]>([])
   const [aspect, setAspect] = useState<AspectRatio>('Original')
   const [customWidth, setCustomWidth] = useState(1080)
   const [customHeight, setCustomHeight] = useState(1080)
@@ -73,9 +80,11 @@ export default function App() {
   const [chromaEnabled, setChromaEnabled] = useState(false)
   const [chromaColor, setChromaColor] = useState('#00b140')
   const [chromaThreshold, setChromaThreshold] = useState(85)
+  const [pickingColor, setPickingColor] = useState(false)
   const [exportQuality, setExportQuality] = useState<720 | 1080>(720)
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
+  const [exportMessage, setExportMessage] = useState('')
 
   useEffect(() => () => { void audioContextRef.current?.close() }, [])
 
@@ -108,7 +117,7 @@ export default function App() {
     const file = event.target.files?.[0]
     if (!file) return
     if (videoUrl) URL.revokeObjectURL(videoUrl)
-    setVideoUrl(URL.createObjectURL(file)); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setCurrentTime(0); setPlaying(false)
+    setVideoUrl(URL.createObjectURL(file)); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage('')
   }
 
   const importBackground = (event: ChangeEvent<HTMLInputElement>) => {
@@ -182,7 +191,11 @@ export default function App() {
     const active = segments[selectedSegment]
     const start = active?.start ?? trimStart
     const end = active?.end ?? trimEnd
-    if (end > start && video.currentTime >= end && !exporting) { video.pause(); video.currentTime = start }
+    if (end > start && video.currentTime >= end && !exporting) {
+      const next = segments[selectedSegment + 1]
+      if (next) { setSelectedSegment(selectedSegment + 1); setTrimStart(next.start); setTrimEnd(next.end); video.currentTime = next.start }
+      else { video.pause(); const first = segments[0]; video.currentTime = first?.start ?? start; if (first) { setSelectedSegment(0); setTrimStart(first.start); setTrimEnd(first.end) } }
+    }
     setCurrentTime(video.currentTime)
   }
 
@@ -196,6 +209,7 @@ export default function App() {
   const filterStyle = `${presetFilter} brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`
 
   const updateSelectedSegment = (start: number, end: number) => {
+    rememberEdit()
     setTrimStart(start); setTrimEnd(end)
     setSegments(items => items.map((item, index) => index === selectedSegment ? { ...item, start, end } : item))
   }
@@ -209,6 +223,7 @@ export default function App() {
   const splitAtPlayhead = () => {
     const segment = segments[selectedSegment]
     if (!segment || currentTime <= segment.start + 0.1 || currentTime >= segment.end - 0.1) return
+    rememberEdit()
     const nextId = Math.max(0, ...segments.map(item => item.id)) + 1
     const next = [...segments]
     next.splice(selectedSegment, 1, { id: segment.id, start: segment.start, end: currentTime }, { id: nextId, start: currentTime, end: segment.end })
@@ -217,6 +232,7 @@ export default function App() {
 
   const deleteSelected = () => {
     if (segments.length <= 1) return
+    rememberEdit()
     const next = segments.filter((_, index) => index !== selectedSegment)
     const index = Math.min(selectedSegment, next.length - 1)
     setSegments(next); selectSegmentFrom(next, index)
@@ -226,6 +242,45 @@ export default function App() {
     const segment = items[index]
     if (!segment) return
     setSelectedSegment(index); setTrimStart(segment.start); setTrimEnd(segment.end); seek(segment.start)
+  }
+
+  const rememberEdit = () => {
+    setUndoStack(items => [...items.slice(-29), { segments: segments.map(item => ({ ...item })), crop: { ...crop } }])
+    setRedoStack([])
+  }
+
+  const restoreSnapshot = (snapshot: EditSnapshot) => {
+    setSegments(snapshot.segments.map(item => ({ ...item }))); setCrop({ ...snapshot.crop })
+    const index = Math.min(selectedSegment, snapshot.segments.length - 1); selectSegmentFrom(snapshot.segments, Math.max(0, index))
+  }
+
+  const undo = () => {
+    const snapshot = undoStack[undoStack.length - 1]; if (!snapshot) return
+    setRedoStack(items => [...items, { segments: segments.map(item => ({ ...item })), crop: { ...crop } }]); setUndoStack(items => items.slice(0, -1)); restoreSnapshot(snapshot)
+  }
+
+  const redo = () => {
+    const snapshot = redoStack[redoStack.length - 1]; if (!snapshot) return
+    setUndoStack(items => [...items, { segments: segments.map(item => ({ ...item })), crop: { ...crop } }]); setRedoStack(items => items.slice(0, -1)); restoreSnapshot(snapshot)
+  }
+
+  const startCropDrag = (event: ReactPointerEvent, mode: 'move' | 'se' | 'sw' | 'ne' | 'nw') => {
+    rememberEdit(); cropDragRef.current = { mode, startX: event.clientX, startY: event.clientY, crop: { ...crop } }; event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const moveCrop = (event: ReactPointerEvent) => {
+    const drag = cropDragRef.current; const stage = event.currentTarget.getBoundingClientRect(); if (!drag) return
+    const dx = (event.clientX - drag.startX) / stage.width; const dy = (event.clientY - drag.startY) / stage.height
+    if (drag.mode === 'move') {
+      setCrop({ ...drag.crop, x: Math.max(0, Math.min(1 - drag.crop.width, drag.crop.x + dx)), y: Math.max(0, Math.min(1 - drag.crop.height, drag.crop.y + dy)) })
+      return
+    }
+    const right = drag.crop.x + drag.crop.width; const bottom = drag.crop.y + drag.crop.height
+    const left = drag.mode.includes('w') ? Math.max(0, Math.min(right - .15, drag.crop.x + dx)) : drag.crop.x
+    const top = drag.mode.includes('n') ? Math.max(0, Math.min(bottom - .15, drag.crop.y + dy)) : drag.crop.y
+    const nextRight = drag.mode.includes('e') ? Math.min(1, Math.max(left + .15, right + dx)) : right
+    const nextBottom = drag.mode.includes('s') ? Math.min(1, Math.max(top + .15, bottom + dy)) : bottom
+    setCrop({ x: left, y: top, width: nextRight - left, height: nextBottom - top })
   }
 
   const getExportSize = () => {
@@ -248,15 +303,44 @@ export default function App() {
     const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true })
     if (!sourceContext) return
     sourceContext.clearRect(0, 0, canvas.width, canvas.height); sourceContext.filter = filterStyle
-    const sourceRatio = video.videoWidth / video.videoHeight
-    const targetRatio = canvas.width / canvas.height
-    let sx = 0; let sy = 0; let sw = video.videoWidth; let sh = video.videoHeight
-    if (sourceRatio > targetRatio) { sw = video.videoHeight * targetRatio; sx = (video.videoWidth - sw) / 2 }
-    else { sh = video.videoWidth / targetRatio; sy = (video.videoHeight - sh) / 2 }
+    const sx = crop.x * video.videoWidth; const sy = crop.y * video.videoHeight
+    const sw = crop.width * video.videoWidth; const sh = crop.height * video.videoHeight
     sourceContext.save(); sourceContext.translate(canvas.width / 2, canvas.height / 2); sourceContext.rotate(rotation * Math.PI / 180)
     sourceContext.drawImage(video, sx, sy, sw, sh, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height); sourceContext.restore()
     if (chromaEnabled) applyChromaKey(sourceContext, canvas.width, canvas.height, chromaColor, chromaThreshold)
     context.drawImage(sourceCanvas, 0, 0); context.restore()
+  }
+
+  useEffect(() => {
+    if (!videoUrl) return
+    let frameId = 0
+    const render = () => {
+      const canvas = previewCanvasRef.current; const video = videoRef.current
+      if (!exporting && canvas && video?.videoWidth) {
+        const size = getExportSize(); const scale = Math.min(1, 560 / Math.max(size.width, size.height))
+        const width = Math.max(2, Math.round(size.width * scale / 2) * 2); const height = Math.max(2, Math.round(size.height * scale / 2) * 2)
+        if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height }
+        drawExportFrame(canvas)
+      }
+      frameId = requestAnimationFrame(render)
+    }
+    render(); return () => cancelAnimationFrame(frameId)
+  }, [videoUrl, aspect, customWidth, customHeight, crop, rotation, filterStyle, bgColor, bgImage, chromaEnabled, chromaColor, chromaThreshold, exporting])
+
+  const pickBackgroundColor = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!pickingColor) return
+    const video = videoRef.current; const canvas = event.currentTarget; if (!video) return
+    const bounds = canvas.getBoundingClientRect(); const nx = (event.clientX - bounds.left) / bounds.width; const ny = (event.clientY - bounds.top) / bounds.height
+    const color = sampleVideoColor(video, crop.x + nx * crop.width, crop.y + ny * crop.height)
+    setChromaColor(color); setChromaEnabled(true); setPickingColor(false)
+  }
+
+  const autoDetectBackground = () => {
+    const video = videoRef.current; if (!video) return
+    const points = [[.04, .04], [.96, .04], [.04, .96], [.96, .96]]
+    const colors = points.map(([x, y]) => hexToRgb(sampleVideoColor(video, x, y)))
+    const average = colors.reduce((sum, color) => sum.map((value, index) => value + color[index]), [0, 0, 0]).map(value => Math.round(value / colors.length))
+    setChromaColor(rgbToHex(average)); setChromaEnabled(true)
   }
 
   const exportVideo = async () => {
@@ -267,7 +351,8 @@ export default function App() {
     const canvasStream = canvas.captureStream(30)
     const audioTrack = exportAudioRef.current?.stream.getAudioTracks()[0]
     if (audioTrack) canvasStream.addTrack(audioTrack)
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm'
+    const mp4Type = 'video/mp4;codecs=avc1.42E01E,mp4a.40.2'
+    const mimeType = MediaRecorder.isTypeSupported(mp4Type) ? mp4Type : MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm'
     const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: exportQuality === 1080 ? 8_000_000 : 5_000_000 })
     const chunks: Blob[] = []; recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
     setExporting(true); setExportProgress(0); recorder.start(1000)
@@ -278,8 +363,9 @@ export default function App() {
       completed += segment.end - segment.start
     }
     recorder.stop(); await new Promise<void>(resolve => { recorder.onstop = () => resolve() })
-    const blob = new Blob(chunks, { type: mimeType }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${fileName.replace(/\.[^.]+$/, '')}-AKB-Studio.webm`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 3000)
-    setExporting(false); setExportProgress(100); seek(segments[0].start)
+    const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm'
+    const blob = new Blob(chunks, { type: mimeType }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${fileName.replace(/\.[^.]+$/, '')}-AKB-Studio.${extension}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 3000)
+    setExporting(false); setExportProgress(100); setExportMessage(`Saved to Downloads as ${extension.toUpperCase()}`); seek(segments[0].start)
   }
 
   return <main className="app">
@@ -287,20 +373,22 @@ export default function App() {
     <section className="workspace">
       <div className="previewPanel">
         {!videoUrl ? <label className="emptyState"><Upload size={40}/><b>Import a video</b><span>Your media stays on this device</span><input type="file" accept="video/*" onChange={importVideo}/></label> : <>
-          <div className="stage" style={{ backgroundColor: bgColor, backgroundImage: bgImage ? `url(${bgImage})` : undefined }}>
-            <video ref={videoRef} src={videoUrl} playsInline style={{ filter: filterStyle, transform: `rotate(${rotation}deg)`, aspectRatio: aspect === 'Original' ? 'auto' : aspect === 'Custom' ? `${customWidth} / ${customHeight}` : aspect.replace(':', ' / ') }} onLoadedMetadata={event => { const length = event.currentTarget.duration; setDuration(length); setTrimEnd(length); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>
+          <div className="stage">
+            <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const length = event.currentTarget.duration; setDuration(length); setTrimEnd(length); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>
+            <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={pickBackgroundColor}/>{tab === 'edit' && <div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div>}</div>
           </div>
           <div className="transport"><button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(currentTime)} / {formatTime(duration)}</span></div>
-          <div className="fileRow"><span className="filename">{fileName}</span><label>Replace<input type="file" accept="video/*" onChange={importVideo}/></label></div>
+          <div className="fileRow"><span className="filename">{fileName}</span>{exportMessage && <span className="saveMessage">{exportMessage}</span>}<label>Replace<input type="file" accept="video/*" onChange={importVideo}/></label></div>
         </>}
       </div>
       <aside className="panel">
         <nav className="tabs"><button className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}><Scissors/>Edit</button><button className={tab === 'filter' ? 'active' : ''} onClick={() => setTab('filter')}><SlidersHorizontal/>Adjust</button><button className={tab === 'voice' ? 'active' : ''} onClick={() => setTab('voice')}><Mic2/>Voice</button><button className={tab === 'background' ? 'active' : ''} onClick={() => setTab('background')}><ImageIcon/>BG</button></nav>
         <div className="controls">
+          <div className="historyActions"><button className="secondary" disabled={!undoStack.length} onClick={undo}><Undo2 size={16}/>Undo</button><button className="secondary" disabled={!redoStack.length} onClick={redo}><Redo2 size={16}/>Redo</button></div>
           {tab === 'edit' && <><section className="card"><h2>Timeline</h2><p>Move the playhead and split. Select any middle clip and delete it. Magnet joins the remaining clips during export.</p></section><div className="timeline">{segments.map((segment, index) => <button key={segment.id} className={selectedSegment === index ? 'selected' : ''} style={{ flex: Math.max(.2, segment.end - segment.start) }} onClick={() => selectSegment(index)}><span>Clip {index + 1}</span><small>{formatTime(segment.end - segment.start)}</small></button>)}</div><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => setAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
           {tab === 'filter' && <><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div><Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setFilterPreset('None') }}>Reset adjustments</button></>}
           {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Live voice preview</h2><p>Natural singing presets use EQ, compression and real local reverb. Nothing is uploaded.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
-          {tab === 'background' && <><section className="card"><h2>Background replacement</h2><p>Chroma key removes a selected backdrop color locally. Automatic person and guitar cutout needs a separate on-device AI model and will follow after this reliable version.</p></section><label className="toggleRow"><input type="checkbox" checked={chromaEnabled} onChange={event => setChromaEnabled(event.target.checked)}/><span>Enable chroma key</span></label>{chromaEnabled && <><label className="field">Remove color<input type="color" value={chromaColor} onChange={event => setChromaColor(event.target.value)}/></label><Slider label="Color tolerance" value={chromaThreshold} setValue={setChromaThreshold} min={10} max={180}/></>}<label className="field">New background color<input type="color" value={bgColor} onChange={event => setBgColor(event.target.value)}/></label><label className="secondary uploadBg">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label>{bgImage && <button className="secondary" onClick={() => { URL.revokeObjectURL(bgImage); setBgImage('') }}>Remove image</button>}</>}
+          {tab === 'background' && <><section className="card"><h2>Background replacement</h2><p>Changes appear instantly in the preview. Auto Detect samples the corners; Pick Color lets you tap the background.</p></section><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={autoDetectBackground}>Auto Detect</button><button className={pickingColor ? 'secondary activeTool' : 'secondary'} disabled={!videoUrl} onClick={() => setPickingColor(value => !value)}>Pick Color</button></div><label className="toggleRow"><input type="checkbox" checked={chromaEnabled} onChange={event => setChromaEnabled(event.target.checked)}/><span>Enable chroma key</span></label>{chromaEnabled && <><label className="field">Remove color<input type="color" value={chromaColor} onChange={event => setChromaColor(event.target.value)}/></label><Slider label="Color tolerance" value={chromaThreshold} setValue={setChromaThreshold} min={10} max={180}/></>}<label className="field">New background color<input type="color" value={bgColor} onChange={event => setBgColor(event.target.value)}/></label><label className="secondary uploadBg">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label>{bgImage && <button className="secondary" onClick={() => { URL.revokeObjectURL(bgImage); setBgImage('') }}>Remove image</button>}</>}
         </div>
       </aside>
     </section>
@@ -336,6 +424,21 @@ function applyChromaKey(context: CanvasRenderingContext2D, width: number, height
     if (distance < threshold) frame.data[index + 3] = Math.round(255 * distance / threshold)
   }
   context.putImageData(frame, 0, 0)
+}
+
+function sampleVideoColor(video: HTMLVideoElement, x: number, y: number) {
+  const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1
+  const context = canvas.getContext('2d'); if (!context) return '#00b140'
+  context.drawImage(video, Math.max(0, Math.min(video.videoWidth - 1, x * video.videoWidth)), Math.max(0, Math.min(video.videoHeight - 1, y * video.videoHeight)), 1, 1, 0, 0, 1, 1)
+  return rgbToHex(Array.from(context.getImageData(0, 0, 1, 1).data.slice(0, 3)))
+}
+
+function hexToRgb(color: string) {
+  return [Number.parseInt(color.slice(1, 3), 16), Number.parseInt(color.slice(3, 5), 16), Number.parseInt(color.slice(5, 7), 16)]
+}
+
+function rgbToHex(color: number[]) {
+  return `#${color.map(value => Math.max(0, Math.min(255, value)).toString(16).padStart(2, '0')).join('')}`
 }
 
 function Slider({ label, value, setValue, min, max, step = 1, suffix = '' }: { label: string; value: number; setValue: (value: number) => void; min: number; max: number; step?: number; suffix?: string }) {
