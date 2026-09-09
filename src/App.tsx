@@ -37,6 +37,7 @@ export default function App() {
   const trebleNodeRef = useRef<BiquadFilterNode | null>(null)
   const compressorRef = useRef<DynamicsCompressorNode | null>(null)
   const outputGainRef = useRef<GainNode | null>(null)
+  const monitorGainRef = useRef<GainNode | null>(null)
   const reverbGainRef = useRef<GainNode | null>(null)
   const echoGainRef = useRef<GainNode | null>(null)
   const echoFeedbackRef = useRef<GainNode | null>(null)
@@ -69,7 +70,7 @@ export default function App() {
   const [contrast, setContrast] = useState(100)
   const [saturation, setSaturation] = useState(100)
   const [filterPreset, setFilterPreset] = useState<FilterPreset>('None')
-  const [blurStrength, setBlurStrength] = useState(10)
+  const [blurStrength, setBlurStrength] = useState(5)
   const [voicePreset, setVoicePreset] = useState<VoicePreset>('Raw Clean')
   const [gain, setGain] = useState(100)
   const [bass, setBass] = useState(0)
@@ -170,16 +171,17 @@ export default function App() {
       const echoGain = context.createGain()
       const echoFeedback = context.createGain()
       const outputGain = context.createGain()
+      const monitorGain = context.createGain()
       const exportAudio = context.createMediaStreamDestination()
       source.connect(bassNode).connect(trebleNode).connect(compressor)
       compressor.connect(dryGain).connect(outputGain)
       compressor.connect(convolver).connect(reverbGain).connect(outputGain)
       compressor.connect(delay).connect(echoGain).connect(outputGain)
       delay.connect(echoFeedback).connect(delay)
-      outputGain.connect(context.destination)
+      outputGain.connect(monitorGain).connect(context.destination)
       outputGain.connect(exportAudio)
       audioContextRef.current = context; bassNodeRef.current = bassNode; trebleNodeRef.current = trebleNode; compressorRef.current = compressor
-      outputGainRef.current = outputGain; reverbGainRef.current = reverbGain; echoGainRef.current = echoGain; echoFeedbackRef.current = echoFeedback
+      outputGainRef.current = outputGain; monitorGainRef.current = monitorGain; reverbGainRef.current = reverbGain; echoGainRef.current = echoGain; echoFeedbackRef.current = echoFeedback
       exportAudioRef.current = exportAudio
       dryGain.gain.value = 1; reverbGain.gain.value = reverb / 100; echoGain.gain.value = echo / 100; echoFeedback.gain.value = Math.min(echo / 125, 0.68)
     }
@@ -384,6 +386,8 @@ export default function App() {
     const video = videoRef.current
     if (!video || !segments.length || exporting || !window.MediaRecorder) return
     await ensureAudio()
+    const monitorGain = monitorGainRef.current
+    if (monitorGain) monitorGain.gain.setValueAtTime(0, monitorGain.context.currentTime)
     const wakeLock = await (navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request('screen').catch(() => null)
     const size = getExportSize(); const canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height
     const canvasStream = canvas.captureStream(30)
@@ -412,6 +416,7 @@ export default function App() {
     const exportName = `${fileName.replace(/\.[^.]+$/, '')}-AKB-Studio.${extension}`
     const blob = new Blob(chunks, { type: mimeType }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = exportName; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000)
     await wakeLock?.release().catch(() => undefined)
+    if (monitorGain) monitorGain.gain.setValueAtTime(1, monitorGain.context.currentTime)
     setExporting(false); setExportProgress(100); setExportMessage(`${exportName} saved in Downloads`); seek(segments[0].start)
   }
 
@@ -434,7 +439,7 @@ export default function App() {
         <div className="controls">
           <div className="historyActions"><button className="secondary" disabled={!undoStack.length} onClick={undo}><Undo2 size={16}/>Undo</button><button className="secondary" disabled={!redoStack.length} onClick={redo}><Redo2 size={16}/>Redo</button></div>
           {tab === 'edit' && <><section className="card"><h2>Timeline</h2><p>Move the playhead and split. Select any middle clip and delete it. Magnet joins the remaining clips during export.</p></section><div className="timeline">{segments.map((segment, index) => <button key={segment.id} className={selectedSegment === index ? 'selected' : ''} style={{ flex: Math.max(.2, segment.end - segment.start) }} onClick={() => selectSegment(index)}><span>Clip {index + 1}</span><small>{formatTime(segment.end - segment.start)}</small></button>)}</div><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => changeAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
-          {tab === 'filter' && <><section className="card"><h2>Visual adjustments</h2><p>Mystery Blur keeps you visibly singing while softening facial detail, so attention stays on the voice.</p></section><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div>{filterPreset === 'Mystery Blur' && <Slider label="Mystery blur" value={blurStrength} setValue={setBlurStrength} min={3} max={22} suffix=" px"/>}<Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlurStrength(10); setFilterPreset('None') }}>Reset adjustments</button></>}
+          {tab === 'filter' && <><section className="card"><h2>Visual adjustments</h2><p>Mystery Blur keeps you visibly singing while gently softening facial detail, so attention stays on the voice.</p></section><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div>{filterPreset === 'Mystery Blur' && <Slider label="Mystery blur" value={blurStrength} setValue={setBlurStrength} min={1} max={14} suffix=" px"/>}<Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlurStrength(5); setFilterPreset('None') }}>Reset adjustments</button></>}
           {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Live voice preview</h2><p>Natural singing presets use EQ, compression and real local reverb. Nothing is uploaded.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
           {tab === 'background' && <><section className="card"><h2>Background replacement</h2><p>Changes appear instantly in the preview. Auto Detect samples the corners; Pick Color lets you tap the background.</p></section><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={autoDetectBackground}>Auto Detect</button><button className={pickingColor ? 'secondary activeTool' : 'secondary'} disabled={!videoUrl} onClick={() => setPickingColor(value => !value)}>Pick Color</button></div><label className="toggleRow"><input type="checkbox" checked={chromaEnabled} onChange={event => setChromaEnabled(event.target.checked)}/><span>Enable chroma key</span></label>{chromaEnabled && <><label className="toggleRow"><input type="checkbox" checked={protectSkin} onChange={event => setProtectSkin(event.target.checked)}/><span>Protect face and skin</span></label><label className="field">Remove color<input type="color" value={chromaColor} onChange={event => setChromaColor(event.target.value)}/></label><Slider label="Color tolerance" value={chromaThreshold} setValue={setChromaThreshold} min={10} max={140}/></>}<label className="field">New background color<input type="color" value={bgColor} onChange={event => setBgColor(event.target.value)}/></label><label className="secondary uploadBg">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label>{bgImage && <button className="secondary" onClick={() => { URL.revokeObjectURL(bgImage); setBgImage('') }}>Remove image</button>}</>}
         </div>
