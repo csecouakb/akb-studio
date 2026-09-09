@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, PointerEvent as ReactPointerEvent } from 'react'
-import fixWebmDuration from 'fix-webm-duration'
+import { ALL_FORMATS, AudioBufferSource, BlobSource, BufferTarget, CanvasSource, Input, Mp4OutputFormat, Output, Quality, VideoSampleSink } from 'mediabunny'
 import { Check, Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, Share2, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
@@ -50,6 +50,7 @@ export default function App() {
   const cropDragRef = useRef<{ mode: 'move' | 'se' | 'sw' | 'ne' | 'nw'; startX: number; startY: number; crop: Crop } | null>(null)
 
   const [videoUrl, setVideoUrl] = useState('')
+  const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [fileName, setFileName] = useState('')
   const [tab, setTab] = useState<Tab>('edit')
   const [playing, setPlaying] = useState(false)
@@ -148,7 +149,7 @@ export default function App() {
     const file = event.target.files?.[0]
     if (!file) return
     if (videoUrl) URL.revokeObjectURL(videoUrl)
-    setVideoUrl(URL.createObjectURL(file)); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setCropApplied(false); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage(''); setExportedFile(null)
+    setVideoUrl(URL.createObjectURL(file)); setSourceFile(file); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setCropApplied(false); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage(''); setExportedFile(null)
   }
 
   const importBackground = (event: ChangeEvent<HTMLInputElement>) => {
@@ -328,14 +329,14 @@ export default function App() {
     const video = videoRef.current
     const sourceRatio = (video?.videoWidth || 16) / (video?.videoHeight || 9)
     const ratio = aspect === '9:16' ? 9 / 16 : aspect === '16:9' ? 16 / 9 : aspect === '1:1' ? 1 : aspect === 'Custom' ? customWidth / customHeight : sourceRatio
-    if (ratio >= 1) return { width: exportQuality, height: Math.round(exportQuality / ratio / 2) * 2 }
-    return { width: Math.round(exportQuality * ratio / 2) * 2, height: exportQuality }
+    if (ratio >= 1) return { width: Math.round(exportQuality * ratio / 2) * 2, height: exportQuality }
+    return { width: exportQuality, height: Math.round(exportQuality / ratio / 2) * 2 }
   }
 
-  const drawExportFrame = (canvas: HTMLCanvasElement) => {
+  const drawExportFrame = (canvas: HTMLCanvasElement, frameSource: CanvasImageSource = videoRef.current as HTMLVideoElement, sourceWidth = videoRef.current?.videoWidth || 0, sourceHeight = videoRef.current?.videoHeight || 0) => {
     const video = videoRef.current
     const context = canvas.getContext('2d')
-    if (!video || !context) return
+    if (!video || !context || !frameSource || !sourceWidth || !sourceHeight) return
     context.save(); context.filter = 'none'; context.fillStyle = bgColor; context.fillRect(0, 0, canvas.width, canvas.height)
     const background = backgroundImageRef.current
     if (background) drawCover(context, background, canvas.width, canvas.height)
@@ -344,11 +345,11 @@ export default function App() {
     const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true })
     if (!sourceContext) return
     sourceContext.clearRect(0, 0, canvas.width, canvas.height); sourceContext.filter = filterStyle
-    const sx = crop.x * video.videoWidth; const sy = crop.y * video.videoHeight
-    const sw = crop.width * video.videoWidth; const sh = crop.height * video.videoHeight
+    const sx = crop.x * sourceWidth; const sy = crop.y * sourceHeight
+    const sw = crop.width * sourceWidth; const sh = crop.height * sourceHeight
     const blurPadding = filterPreset === 'Mystery Blur' ? blurStrength * 2 : 0
     sourceContext.save(); sourceContext.translate(canvas.width / 2, canvas.height / 2); sourceContext.rotate(rotation * Math.PI / 180)
-    sourceContext.drawImage(video, sx, sy, sw, sh, -canvas.width / 2 - blurPadding, -canvas.height / 2 - blurPadding, canvas.width + blurPadding * 2, canvas.height + blurPadding * 2); sourceContext.restore()
+    sourceContext.drawImage(frameSource, sx, sy, sw, sh, -canvas.width / 2 - blurPadding, -canvas.height / 2 - blurPadding, canvas.width + blurPadding * 2, canvas.height + blurPadding * 2); sourceContext.restore()
     if (chromaEnabled) applyChromaKey(sourceContext, canvas.width, canvas.height, chromaColor, chromaThreshold, protectSkin)
     context.drawImage(sourceCanvas, 0, 0); context.restore()
   }
@@ -391,47 +392,73 @@ export default function App() {
 
   const exportVideo = async () => {
     const video = videoRef.current
-    if (!video || !segments.length || exporting || !window.MediaRecorder) return
-    await ensureAudio()
-    const monitorGain = monitorGainRef.current
-    if (monitorGain) monitorGain.gain.setValueAtTime(0, monitorGain.context.currentTime)
+    if (!video || !sourceFile || !segments.length || exporting) return
+    video.pause()
     const wakeLock = await (navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request('screen').catch(() => null)
-    const size = getExportSize(); const canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height
-    let canvasStream = canvas.captureStream(0)
-    let canvasTrack = canvasStream.getVideoTracks()[0] as MediaStreamTrack & { requestFrame?: () => void }
-    if (!canvasTrack.requestFrame) { canvasTrack.stop(); canvasStream = canvas.captureStream(30); canvasTrack = canvasStream.getVideoTracks()[0] }
-    const drawRecordingFrame = () => { drawExportFrame(canvas); canvasTrack.requestFrame?.() }
-    const audioTrack = exportAudioRef.current?.stream.getAudioTracks()[0]
-    if (audioTrack) canvasStream.addTrack(audioTrack)
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm'
-    const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: exportQuality === 1080 ? 12_000_000 : 7_000_000 })
-    const chunks: Blob[] = []; recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
-    setExporting(true); setExportProgress(0)
-    const total = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0); let completed = 0
-    video.playbackRate = speed
-    await seekVideo(video, segments[0].start); drawRecordingFrame(); recorder.start(1000)
-    for (const [segmentIndex, segment] of segments.entries()) {
-      if (segmentIndex > 0) {
-        if (recorder.state === 'recording') recorder.pause()
-        await seekVideo(video, segment.start); drawRecordingFrame()
-        if (recorder.state === 'paused') recorder.resume()
+    setExporting(true); setExportProgress(0); setExportMessage('Preparing stable MP4 encoder')
+    let input: Input | null = null
+    try {
+      const size = getExportSize(); const canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height
+      const rawCanvas = document.createElement('canvas')
+      input = new Input({ source: new BlobSource(sourceFile), formats: ALL_FORMATS })
+      const videoTrack = await input.getPrimaryVideoTrack()
+      if (!videoTrack) throw new Error('No video track was found in this file.')
+      const videoSink = new VideoSampleSink(videoTrack)
+      const target = new BufferTarget()
+      const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target })
+      const videoSource = new CanvasSource(canvas, { codec: 'avc', quality: new Quality(exportQuality === 1080 ? 'very-high' : 'high'), keyFrameInterval: 2 })
+      output.addVideoTrack(videoSource, { frameRate: 30 })
+
+      const processedAudio = await renderExportAudio(sourceFile, segments, speed, { gain, bass, treble, compression, reverb, echo })
+      const audioSource = processedAudio ? new AudioBufferSource({ codec: 'aac', quality: new Quality('high') }) : null
+      if (audioSource) output.addAudioTrack(audioSource)
+      await output.start()
+
+      const fps = 30; const frameDuration = 1 / fps
+      const frames: { sourceTime: number; outputTime: number }[] = []
+      let outputOffset = 0
+      for (const segment of segments) {
+        const outputLength = (segment.end - segment.start) / speed
+        const frameCount = Math.max(1, Math.ceil(outputLength * fps))
+        for (let index = 0; index < frameCount; index += 1) frames.push({ sourceTime: Math.min(segment.end - 0.000001, segment.start + index * frameDuration * speed), outputTime: outputOffset + index * frameDuration })
+        outputOffset += outputLength
       }
-      await video.play()
-      await new Promise<void>(resolve => { const frame = () => { drawRecordingFrame(); const elapsed = Math.max(0, Math.min(video.currentTime, segment.end) - segment.start); setExportProgress(Math.round((completed + elapsed) / total * 100)); if (video.currentTime >= segment.end || video.ended) { video.pause(); resolve() } else { if (video.paused) void video.play(); scheduleVideoFrame(video, frame) } }; scheduleVideoFrame(video, frame) })
-      completed += segment.end - segment.start
+
+      let encoded = 0
+      const samples = videoSink.samplesAtTimestamps(frames.map(frame => frame.sourceTime))
+      for await (const sample of samples) {
+        const timing = frames[encoded]
+        if (sample) {
+          if (rawCanvas.width !== sample.displayWidth || rawCanvas.height !== sample.displayHeight) { rawCanvas.width = sample.displayWidth; rawCanvas.height = sample.displayHeight }
+          const rawContext = rawCanvas.getContext('2d')
+          if (!rawContext) throw new Error('Canvas rendering is unavailable.')
+          rawContext.clearRect(0, 0, rawCanvas.width, rawCanvas.height); sample.draw(rawContext, 0, 0, rawCanvas.width, rawCanvas.height)
+          drawExportFrame(canvas, rawCanvas, rawCanvas.width, rawCanvas.height)
+          await videoSource.add(timing.outputTime, frameDuration, { keyFrame: encoded % (fps * 2) === 0 })
+          sample.close()
+        }
+        encoded += 1
+        if (encoded % 6 === 0 || encoded === frames.length) setExportProgress(Math.min(88, Math.round(encoded / frames.length * 88)))
+      }
+      videoSource.close()
+      if (audioSource && processedAudio) { setExportMessage('Encoding balanced AAC audio'); await audioSource.add(processedAudio); audioSource.close() }
+      setExportProgress(94); setExportMessage('Finalizing MP4 duration and thumbnail')
+      await output.finalize()
+      if (!target.buffer) throw new Error('The MP4 encoder returned an empty file.')
+      const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, '-').slice(0, 15)
+      const exportName = `${fileName.replace(/\.[^.]+$/, '')}-AKB-${stamp}.mp4`
+      const exported = new File([target.buffer], exportName, { type: 'video/mp4' })
+      setExportedFile(exported)
+      downloadFile(exported)
+      setExportProgress(100); setExportMessage(`${exportName} saved in Downloads`)
+    } catch (error) {
+      console.error(error)
+      setExportProgress(0); setExportMessage(`MP4 export failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      input?.dispose()
+      await wakeLock?.release().catch(() => undefined)
+      setExporting(false); seek(segments[0].start)
     }
-    recorder.stop(); await new Promise<void>(resolve => { recorder.onstop = () => resolve() })
-    const extension = 'webm'
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, '-').slice(0, 15)
-    const exportName = `${fileName.replace(/\.[^.]+$/, '')}-AKB-${stamp}.${extension}`
-    const rawBlob = new Blob(chunks, { type: mimeType })
-    const expectedDuration = total / speed * 1000
-    const blob = extension === 'webm' ? await fixWebmDuration(rawBlob, expectedDuration, { logger: false }) : rawBlob
-    setExportedFile(new File([blob], exportName, { type: blob.type }))
-    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = exportName; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000)
-    await wakeLock?.release().catch(() => undefined)
-    if (monitorGain) monitorGain.gain.setValueAtTime(1, monitorGain.context.currentTime)
-    setExporting(false); setExportProgress(100); setExportMessage(`${exportName} saved in Downloads`); seek(segments[0].start)
   }
 
   const saveToGallery = async () => {
@@ -468,7 +495,48 @@ export default function App() {
   </main>
 }
 
-function createImpulse(context: AudioContext, seconds: number, decay: number) {
+async function renderExportAudio(file: File, segments: Segment[], speed: number, settings: { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number }) {
+  const DecodeContext = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!DecodeContext) return null
+  const decoder = new DecodeContext()
+  let decoded: AudioBuffer
+  try { decoded = await decoder.decodeAudioData(await file.arrayBuffer()) } finally { await decoder.close() }
+  const outputDuration = segments.reduce((sum, segment) => sum + (segment.end - segment.start) / speed, 0)
+  const sampleRate = Math.min(48000, decoded.sampleRate)
+  const offline = new OfflineAudioContext(Math.min(2, decoded.numberOfChannels), Math.max(1, Math.ceil(outputDuration * sampleRate)), sampleRate)
+  const bassNode = offline.createBiquadFilter(); bassNode.type = 'lowshelf'; bassNode.frequency.value = 180; bassNode.gain.value = settings.bass
+  const trebleNode = offline.createBiquadFilter(); trebleNode.type = 'highshelf'; trebleNode.frequency.value = 3500; trebleNode.gain.value = settings.treble
+  const compressor = offline.createDynamicsCompressor(); compressor.threshold.value = -12 - settings.compression * .2; compressor.ratio.value = 1 + settings.compression * .055; compressor.attack.value = .012; compressor.release.value = .22; compressor.knee.value = 16
+  const dryGain = offline.createGain(); dryGain.gain.value = 1
+  const convolver = offline.createConvolver(); convolver.buffer = createImpulse(offline, 2.2, 2.8)
+  const reverbGain = offline.createGain(); reverbGain.gain.value = settings.reverb / 100
+  const delay = offline.createDelay(1); delay.delayTime.value = .24
+  const echoGain = offline.createGain(); echoGain.gain.value = settings.echo / 100
+  const echoFeedback = offline.createGain(); echoFeedback.gain.value = Math.min(settings.echo / 125, .68)
+  const outputGain = offline.createGain(); outputGain.gain.value = settings.gain / 100
+  bassNode.connect(trebleNode).connect(compressor)
+  compressor.connect(dryGain).connect(outputGain)
+  compressor.connect(convolver).connect(reverbGain).connect(outputGain)
+  compressor.connect(delay).connect(echoGain).connect(outputGain)
+  delay.connect(echoFeedback).connect(delay)
+  outputGain.connect(offline.destination)
+  let offset = 0
+  for (const segment of segments) {
+    const source = offline.createBufferSource(); source.buffer = decoded; source.playbackRate.value = speed; source.connect(bassNode)
+    const sourceDuration = Math.max(0, Math.min(decoded.duration, segment.end) - Math.max(0, segment.start))
+    if (sourceDuration > 0) source.start(offset, Math.max(0, segment.start), sourceDuration)
+    offset += sourceDuration / speed
+  }
+  return offline.startRendering()
+}
+
+function downloadFile(file: File) {
+  const url = URL.createObjectURL(file)
+  const link = document.createElement('a'); link.href = url; link.download = file.name; document.body.appendChild(link); link.click(); link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 30000)
+}
+
+function createImpulse(context: BaseAudioContext, seconds: number, decay: number) {
   const length = Math.floor(context.sampleRate * seconds)
   const impulse = context.createBuffer(2, length, context.sampleRate)
   for (let channel = 0; channel < impulse.numberOfChannels; channel += 1) {
