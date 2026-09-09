@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, PointerEvent as ReactPointerEvent } from 'react'
+import fixWebmDuration from 'fix-webm-duration'
 import { Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
@@ -390,31 +391,37 @@ export default function App() {
     if (monitorGain) monitorGain.gain.setValueAtTime(0, monitorGain.context.currentTime)
     const wakeLock = await (navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request('screen').catch(() => null)
     const size = getExportSize(); const canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height
-    const canvasStream = canvas.captureStream(30)
+    let canvasStream = canvas.captureStream(0)
+    let canvasTrack = canvasStream.getVideoTracks()[0] as MediaStreamTrack & { requestFrame?: () => void }
+    if (!canvasTrack.requestFrame) { canvasTrack.stop(); canvasStream = canvas.captureStream(30); canvasTrack = canvasStream.getVideoTracks()[0] }
+    const drawRecordingFrame = () => { drawExportFrame(canvas); canvasTrack.requestFrame?.() }
     const audioTrack = exportAudioRef.current?.stream.getAudioTracks()[0]
     if (audioTrack) canvasStream.addTrack(audioTrack)
     const mp4Type = 'video/mp4;codecs=avc1.42E01E,mp4a.40.2'
-    const mimeType = MediaRecorder.isTypeSupported(mp4Type) ? mp4Type : MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm'
-    const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: exportQuality === 1080 ? 8_000_000 : 5_000_000 })
+    const mimeType = MediaRecorder.isTypeSupported(mp4Type) ? mp4Type : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm'
+    const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: exportQuality === 1080 ? 12_000_000 : 7_000_000 })
     const chunks: Blob[] = []; recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
     setExporting(true); setExportProgress(0)
     const total = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0); let completed = 0
     video.playbackRate = speed
-    await seekVideo(video, segments[0].start); drawExportFrame(canvas); recorder.start(1000)
+    await seekVideo(video, segments[0].start); drawRecordingFrame(); recorder.start(1000)
     for (const [segmentIndex, segment] of segments.entries()) {
       if (segmentIndex > 0) {
         if (recorder.state === 'recording') recorder.pause()
-        await seekVideo(video, segment.start); drawExportFrame(canvas)
+        await seekVideo(video, segment.start); drawRecordingFrame()
         if (recorder.state === 'paused') recorder.resume()
       }
       await video.play()
-      await new Promise<void>(resolve => { const frame = () => { drawExportFrame(canvas); const elapsed = Math.max(0, Math.min(video.currentTime, segment.end) - segment.start); setExportProgress(Math.round((completed + elapsed) / total * 100)); if (video.currentTime >= segment.end || video.ended) { video.pause(); resolve() } else { if (video.paused) void video.play(); scheduleVideoFrame(video, frame) } }; scheduleVideoFrame(video, frame) })
+      await new Promise<void>(resolve => { const frame = () => { drawRecordingFrame(); const elapsed = Math.max(0, Math.min(video.currentTime, segment.end) - segment.start); setExportProgress(Math.round((completed + elapsed) / total * 100)); if (video.currentTime >= segment.end || video.ended) { video.pause(); resolve() } else { if (video.paused) void video.play(); scheduleVideoFrame(video, frame) } }; scheduleVideoFrame(video, frame) })
       completed += segment.end - segment.start
     }
     recorder.stop(); await new Promise<void>(resolve => { recorder.onstop = () => resolve() })
     const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm'
     const exportName = `${fileName.replace(/\.[^.]+$/, '')}-AKB-Studio.${extension}`
-    const blob = new Blob(chunks, { type: mimeType }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = exportName; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000)
+    const rawBlob = new Blob(chunks, { type: mimeType })
+    const expectedDuration = total / speed * 1000
+    const blob = extension === 'webm' ? await fixWebmDuration(rawBlob, expectedDuration, { logger: false }) : rawBlob
+    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = exportName; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000)
     await wakeLock?.release().catch(() => undefined)
     if (monitorGain) monitorGain.gain.setValueAtTime(1, monitorGain.context.currentTime)
     setExporting(false); setExportProgress(100); setExportMessage(`${exportName} saved in Downloads`); seek(segments[0].start)
