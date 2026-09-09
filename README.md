@@ -20,3 +20,14 @@ npm run dev
 ```
 
 Then open the local URL shown by Vite.
+
+## Current milestone
+
+- Responsive desktop and mobile editor
+- Offline app shell and installable manifest
+- Local video import, preview, seek, trim-range preview, speed and rotation
+- Brightness, contrast, saturation and five visual presets
+- Nine live Voice Studio presets with EQ, compression, convolution reverb and echo
+- Background color and image canvas
+
+Rendered export, split/timeline and local person segmentation remain planned milestones.
