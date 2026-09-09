@@ -193,7 +193,7 @@ export default function App() {
 
   const togglePlay = async () => {
     const video = videoRef.current
-    if (!video) return
+    if (!video || exporting) return
     await ensureAudio()
     if (video.paused) {
       const segment = segments[selectedSegment]
@@ -383,6 +383,7 @@ export default function App() {
     const video = videoRef.current
     if (!video || !segments.length || exporting || !window.MediaRecorder) return
     await ensureAudio()
+    const wakeLock = await (navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request('screen').catch(() => null)
     const size = getExportSize(); const canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height
     const canvasStream = canvas.captureStream(30)
     const audioTrack = exportAudioRef.current?.stream.getAudioTracks()[0]
@@ -395,13 +396,14 @@ export default function App() {
     const total = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0); let completed = 0
     for (const segment of segments) {
       video.currentTime = segment.start; await waitForSeek(video); await video.play()
-      await new Promise<void>(resolve => { const frame = () => { drawExportFrame(canvas); const elapsed = Math.min(video.currentTime, segment.end) - segment.start; setExportProgress(Math.round((completed + elapsed) / total * 100)); if (video.currentTime >= segment.end || video.ended) { video.pause(); resolve() } else requestAnimationFrame(frame) }; frame() })
+      await new Promise<void>(resolve => { const frame = () => { drawExportFrame(canvas); const elapsed = Math.min(video.currentTime, segment.end) - segment.start; setExportProgress(Math.round((completed + elapsed) / total * 100)); if (video.currentTime >= segment.end || video.ended) { video.pause(); resolve() } else { if (video.paused) void video.play(); requestAnimationFrame(frame) } }; frame() })
       completed += segment.end - segment.start
     }
     recorder.stop(); await new Promise<void>(resolve => { recorder.onstop = () => resolve() })
     const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm'
     const exportName = `${fileName.replace(/\.[^.]+$/, '')}-AKB-Studio.${extension}`
     const blob = new Blob(chunks, { type: mimeType }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = exportName; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000)
+    await wakeLock?.release().catch(() => undefined)
     setExporting(false); setExportProgress(100); setExportMessage(`${exportName} saved in Downloads`); seek(segments[0].start)
   }
 
@@ -414,7 +416,7 @@ export default function App() {
             <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const length = event.currentTarget.duration; setDuration(length); setTrimEnd(length); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>
             <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={pickBackgroundColor}/>{tab === 'edit' && <div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div>}</div>
           </div>
-          <div className="transport"><button onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(currentTime)} / {formatTime(duration)}</span></div>
+          <div className="transport"><button disabled={exporting} onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" disabled={exporting} aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(currentTime)} / {formatTime(duration)}</span></div>
           <div className="fileRow"><span className="filename">{fileName}</span><label>Replace<input type="file" accept="video/*" onChange={importVideo}/></label></div>
           {(exporting || exportMessage) && <div className={exporting ? 'exportStatus working' : 'exportStatus done'}><div><span>{exporting ? 'Exporting video' : 'Export complete'}</span><b>{exporting ? `${exportProgress}%` : exportMessage}</b></div><progress max="100" value={exportProgress}/>{!exporting && exportMessage.endsWith('.webm saved in Downloads') && <small>WEBM may appear in Downloads instead of Android Gallery.</small>}</div>}
         </>}
