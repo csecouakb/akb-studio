@@ -4,14 +4,14 @@ import { Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateC
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
 type VoicePreset = 'Raw Clean' | 'Studio' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
-type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono'
+type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono' | 'Mystery Blur'
 type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | 'Custom'
 type Segment = { id: number; start: number; end: number }
 type Crop = { x: number; y: number; width: number; height: number }
 type EditSnapshot = { segments: Segment[]; crop: Crop }
 
 const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
-const filterPresets: FilterPreset[] = ['None', 'Vivid', 'Warm', 'Cool', 'Mono']
+const filterPresets: FilterPreset[] = ['None', 'Vivid', 'Warm', 'Cool', 'Mono', 'Mystery Blur']
 const voiceSettings: Record<VoicePreset, { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number }> = {
   'Raw Clean': { gain: 100, bass: 0, treble: 1, compression: 25, reverb: 0, echo: 0 },
   Studio: { gain: 108, bass: 2, treble: 3, compression: 58, reverb: 12, echo: 0 },
@@ -68,6 +68,7 @@ export default function App() {
   const [contrast, setContrast] = useState(100)
   const [saturation, setSaturation] = useState(100)
   const [filterPreset, setFilterPreset] = useState<FilterPreset>('None')
+  const [blurStrength, setBlurStrength] = useState(10)
   const [voicePreset, setVoicePreset] = useState<VoicePreset>('Raw Clean')
   const [gain, setGain] = useState(100)
   const [bass, setBass] = useState(0)
@@ -227,8 +228,9 @@ export default function App() {
     if (filterPreset === 'Warm') return 'sepia(.22) hue-rotate(-8deg)'
     if (filterPreset === 'Cool') return 'sepia(.08) hue-rotate(165deg)'
     if (filterPreset === 'Mono') return 'grayscale(1)'
+    if (filterPreset === 'Mystery Blur') return `blur(${blurStrength}px)`
     return ''
-  }, [filterPreset])
+  }, [filterPreset, blurStrength])
   const filterStyle = `${presetFilter} brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`
 
   const updateSelectedSegment = (start: number, end: number) => {
@@ -335,8 +337,9 @@ export default function App() {
     sourceContext.clearRect(0, 0, canvas.width, canvas.height); sourceContext.filter = filterStyle
     const sx = crop.x * video.videoWidth; const sy = crop.y * video.videoHeight
     const sw = crop.width * video.videoWidth; const sh = crop.height * video.videoHeight
+    const blurPadding = filterPreset === 'Mystery Blur' ? blurStrength * 2 : 0
     sourceContext.save(); sourceContext.translate(canvas.width / 2, canvas.height / 2); sourceContext.rotate(rotation * Math.PI / 180)
-    sourceContext.drawImage(video, sx, sy, sw, sh, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height); sourceContext.restore()
+    sourceContext.drawImage(video, sx, sy, sw, sh, -canvas.width / 2 - blurPadding, -canvas.height / 2 - blurPadding, canvas.width + blurPadding * 2, canvas.height + blurPadding * 2); sourceContext.restore()
     if (chromaEnabled) applyChromaKey(sourceContext, canvas.width, canvas.height, chromaColor, chromaThreshold, protectSkin)
     context.drawImage(sourceCanvas, 0, 0); context.restore()
   }
@@ -352,13 +355,13 @@ export default function App() {
         if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height }
         if (tab === 'edit') {
           const context = canvas.getContext('2d')
-          if (context) { context.clearRect(0, 0, width, height); context.filter = filterStyle; context.drawImage(video, 0, 0, width, height) }
+          if (context) { const padding = filterPreset === 'Mystery Blur' ? blurStrength * 2 : 0; context.clearRect(0, 0, width, height); context.filter = filterStyle; context.drawImage(video, -padding, -padding, width + padding * 2, height + padding * 2) }
         } else drawExportFrame(canvas)
       }
       frameId = requestAnimationFrame(render)
     }
     render(); return () => cancelAnimationFrame(frameId)
-  }, [videoUrl, tab, aspect, customWidth, customHeight, crop, rotation, filterStyle, bgColor, bgImage, chromaEnabled, chromaColor, chromaThreshold, protectSkin, exporting])
+  }, [videoUrl, tab, aspect, customWidth, customHeight, crop, rotation, filterStyle, filterPreset, blurStrength, bgColor, bgImage, chromaEnabled, chromaColor, chromaThreshold, protectSkin, exporting])
 
   const pickBackgroundColor = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!pickingColor) return
@@ -421,7 +424,7 @@ export default function App() {
         <div className="controls">
           <div className="historyActions"><button className="secondary" disabled={!undoStack.length} onClick={undo}><Undo2 size={16}/>Undo</button><button className="secondary" disabled={!redoStack.length} onClick={redo}><Redo2 size={16}/>Redo</button></div>
           {tab === 'edit' && <><section className="card"><h2>Timeline</h2><p>Move the playhead and split. Select any middle clip and delete it. Magnet joins the remaining clips during export.</p></section><div className="timeline">{segments.map((segment, index) => <button key={segment.id} className={selectedSegment === index ? 'selected' : ''} style={{ flex: Math.max(.2, segment.end - segment.start) }} onClick={() => selectSegment(index)}><span>Clip {index + 1}</span><small>{formatTime(segment.end - segment.start)}</small></button>)}</div><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => changeAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
-          {tab === 'filter' && <><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div><Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setFilterPreset('None') }}>Reset adjustments</button></>}
+          {tab === 'filter' && <><section className="card"><h2>Visual adjustments</h2><p>Mystery Blur keeps you visibly singing while softening facial detail, so attention stays on the voice.</p></section><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div>{filterPreset === 'Mystery Blur' && <Slider label="Mystery blur" value={blurStrength} setValue={setBlurStrength} min={3} max={22} suffix=" px"/>}<Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlurStrength(10); setFilterPreset('None') }}>Reset adjustments</button></>}
           {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Live voice preview</h2><p>Natural singing presets use EQ, compression and real local reverb. Nothing is uploaded.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
           {tab === 'background' && <><section className="card"><h2>Background replacement</h2><p>Changes appear instantly in the preview. Auto Detect samples the corners; Pick Color lets you tap the background.</p></section><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={autoDetectBackground}>Auto Detect</button><button className={pickingColor ? 'secondary activeTool' : 'secondary'} disabled={!videoUrl} onClick={() => setPickingColor(value => !value)}>Pick Color</button></div><label className="toggleRow"><input type="checkbox" checked={chromaEnabled} onChange={event => setChromaEnabled(event.target.checked)}/><span>Enable chroma key</span></label>{chromaEnabled && <><label className="toggleRow"><input type="checkbox" checked={protectSkin} onChange={event => setProtectSkin(event.target.checked)}/><span>Protect face and skin</span></label><label className="field">Remove color<input type="color" value={chromaColor} onChange={event => setChromaColor(event.target.value)}/></label><Slider label="Color tolerance" value={chromaThreshold} setValue={setChromaThreshold} min={10} max={140}/></>}<label className="field">New background color<input type="color" value={bgColor} onChange={event => setBgColor(event.target.value)}/></label><label className="secondary uploadBg">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label>{bgImage && <button className="secondary" onClick={() => { URL.revokeObjectURL(bgImage); setBgImage('') }}>Remove image</button>}</>}
         </div>
