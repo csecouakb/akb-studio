@@ -1,24 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, PointerEvent as ReactPointerEvent } from 'react'
 import fixWebmDuration from 'fix-webm-duration'
-import { Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
+import { Check, Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, Share2, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
-type VoicePreset = 'Raw Clean' | 'Studio' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'Dolby Style' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
-type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono' | 'Mystery Blur'
+type VoicePreset = 'Raw Clean' | 'Studio' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'iPhone Balance' | 'Dolby Style' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
+type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono' | 'Cinema Glow' | 'Mystery Blur'
 type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | 'Custom'
 type Segment = { id: number; start: number; end: number }
 type Crop = { x: number; y: number; width: number; height: number }
 type EditSnapshot = { segments: Segment[]; crop: Crop }
 
-const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'Dolby Style', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
-const filterPresets: FilterPreset[] = ['None', 'Vivid', 'Warm', 'Cool', 'Mono', 'Mystery Blur']
+const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'iPhone Balance', 'Dolby Style', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
+const filterPresets: FilterPreset[] = ['None', 'Vivid', 'Warm', 'Cool', 'Mono', 'Cinema Glow', 'Mystery Blur']
 const voiceSettings: Record<VoicePreset, { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number }> = {
   'Raw Clean': { gain: 100, bass: 0, treble: 1, compression: 25, reverb: 0, echo: 0 },
   Studio: { gain: 108, bass: 2, treble: 3, compression: 58, reverb: 12, echo: 0 },
   'Clear Vocal': { gain: 106, bass: -1, treble: 5, compression: 62, reverb: 7, echo: 0 },
   'Warm Vocal': { gain: 105, bass: 4, treble: -1, compression: 42, reverb: 10, echo: 0 },
   Unplugged: { gain: 103, bass: 2, treble: 2, compression: 34, reverb: 16, echo: 0 },
+  'iPhone Balance': { gain: 104, bass: 1, treble: 2, compression: 48, reverb: 4, echo: 0 },
   'Dolby Style': { gain: 108, bass: 3, treble: 4, compression: 64, reverb: 18, echo: 4 },
   'Soft Reverb': { gain: 100, bass: 1, treble: 2, compression: 35, reverb: 24, echo: 0 },
   'Studio Reverb': { gain: 103, bass: 2, treble: 3, compression: 48, reverb: 36, echo: 0 },
@@ -60,6 +61,7 @@ export default function App() {
   const [selectedSegment, setSelectedSegment] = useState(0)
   const [magnet, setMagnet] = useState(true)
   const [crop, setCrop] = useState<Crop>({ x: 0, y: 0, width: 1, height: 1 })
+  const [cropApplied, setCropApplied] = useState(false)
   const [undoStack, setUndoStack] = useState<EditSnapshot[]>([])
   const [redoStack, setRedoStack] = useState<EditSnapshot[]>([])
   const [aspect, setAspect] = useState<AspectRatio>('Original')
@@ -90,6 +92,7 @@ export default function App() {
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const [exportMessage, setExportMessage] = useState('')
+  const [exportedFile, setExportedFile] = useState<File | null>(null)
 
   const getTargetRatio = (value: AspectRatio = aspect) => {
     const video = videoRef.current
@@ -106,6 +109,7 @@ export default function App() {
     setAspect(value)
     if (!video?.videoWidth) return
     rememberEdit()
+    setCropApplied(false)
     const sourceRatio = video.videoWidth / video.videoHeight
     const targetRatio = getTargetRatio(value)
     const width = sourceRatio > targetRatio ? targetRatio / sourceRatio : 1
@@ -144,7 +148,7 @@ export default function App() {
     const file = event.target.files?.[0]
     if (!file) return
     if (videoUrl) URL.revokeObjectURL(videoUrl)
-    setVideoUrl(URL.createObjectURL(file)); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage('')
+    setVideoUrl(URL.createObjectURL(file)); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setCropApplied(false); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage(''); setExportedFile(null)
   }
 
   const importBackground = (event: ChangeEvent<HTMLInputElement>) => {
@@ -232,6 +236,7 @@ export default function App() {
     if (filterPreset === 'Warm') return 'sepia(.22) hue-rotate(-8deg)'
     if (filterPreset === 'Cool') return 'sepia(.08) hue-rotate(165deg)'
     if (filterPreset === 'Mono') return 'grayscale(1)'
+    if (filterPreset === 'Cinema Glow') return 'brightness(1.06) contrast(1.08) saturate(1.3) sepia(.08)'
     if (filterPreset === 'Mystery Blur') return `blur(${blurStrength}px)`
     return ''
   }, [filterPreset, blurStrength])
@@ -294,7 +299,7 @@ export default function App() {
   }
 
   const startCropDrag = (event: ReactPointerEvent, mode: 'move' | 'se' | 'sw' | 'ne' | 'nw') => {
-    rememberEdit(); cropDragRef.current = { mode, startX: event.clientX, startY: event.clientY, crop: { ...crop } }; event.currentTarget.setPointerCapture(event.pointerId)
+    rememberEdit(); setCropApplied(false); cropDragRef.current = { mode, startX: event.clientX, startY: event.clientY, crop: { ...crop } }; event.currentTarget.setPointerCapture(event.pointerId)
   }
 
   const moveCrop = (event: ReactPointerEvent) => {
@@ -354,10 +359,11 @@ export default function App() {
     const render = () => {
       const canvas = previewCanvasRef.current; const video = videoRef.current
       if (!exporting && canvas && video?.videoWidth) {
-        const size = tab === 'edit' ? { width: video.videoWidth, height: video.videoHeight } : getExportSize(); const scale = Math.min(1, 560 / Math.max(size.width, size.height))
+        const editingCrop = tab === 'edit' && !cropApplied
+        const size = editingCrop ? { width: video.videoWidth, height: video.videoHeight } : getExportSize(); const scale = Math.min(1, 560 / Math.max(size.width, size.height))
         const width = Math.max(2, Math.round(size.width * scale / 2) * 2); const height = Math.max(2, Math.round(size.height * scale / 2) * 2)
         if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height }
-        if (tab === 'edit') {
+        if (editingCrop) {
           const context = canvas.getContext('2d')
           if (context) { const padding = filterPreset === 'Mystery Blur' ? blurStrength * 2 : 0; context.clearRect(0, 0, width, height); context.filter = filterStyle; context.drawImage(video, -padding, -padding, width + padding * 2, height + padding * 2) }
         } else drawExportFrame(canvas)
@@ -365,7 +371,7 @@ export default function App() {
       frameId = requestAnimationFrame(render)
     }
     render(); return () => cancelAnimationFrame(frameId)
-  }, [videoUrl, tab, aspect, customWidth, customHeight, crop, rotation, filterStyle, filterPreset, blurStrength, bgColor, bgImage, chromaEnabled, chromaColor, chromaThreshold, protectSkin, exporting])
+  }, [videoUrl, tab, cropApplied, aspect, customWidth, customHeight, crop, rotation, filterStyle, filterPreset, blurStrength, bgColor, bgImage, chromaEnabled, chromaColor, chromaThreshold, protectSkin, exporting])
 
   const pickBackgroundColor = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!pickingColor) return
@@ -397,8 +403,7 @@ export default function App() {
     const drawRecordingFrame = () => { drawExportFrame(canvas); canvasTrack.requestFrame?.() }
     const audioTrack = exportAudioRef.current?.stream.getAudioTracks()[0]
     if (audioTrack) canvasStream.addTrack(audioTrack)
-    const mp4Type = 'video/mp4;codecs=avc1.42E01E,mp4a.40.2'
-    const mimeType = MediaRecorder.isTypeSupported(mp4Type) ? mp4Type : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm'
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm'
     const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: exportQuality === 1080 ? 12_000_000 : 7_000_000 })
     const chunks: Blob[] = []; recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
     setExporting(true); setExportProgress(0)
@@ -416,15 +421,22 @@ export default function App() {
       completed += segment.end - segment.start
     }
     recorder.stop(); await new Promise<void>(resolve => { recorder.onstop = () => resolve() })
-    const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm'
-    const exportName = `${fileName.replace(/\.[^.]+$/, '')}-AKB-Studio.${extension}`
+    const extension = 'webm'
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, '-').slice(0, 15)
+    const exportName = `${fileName.replace(/\.[^.]+$/, '')}-AKB-${stamp}.${extension}`
     const rawBlob = new Blob(chunks, { type: mimeType })
     const expectedDuration = total / speed * 1000
     const blob = extension === 'webm' ? await fixWebmDuration(rawBlob, expectedDuration, { logger: false }) : rawBlob
+    setExportedFile(new File([blob], exportName, { type: blob.type }))
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = exportName; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000)
     await wakeLock?.release().catch(() => undefined)
     if (monitorGain) monitorGain.gain.setValueAtTime(1, monitorGain.context.currentTime)
     setExporting(false); setExportProgress(100); setExportMessage(`${exportName} saved in Downloads`); seek(segments[0].start)
+  }
+
+  const saveToGallery = async () => {
+    if (!exportedFile || !navigator.share) return
+    try { await navigator.share({ files: [exportedFile], title: 'AKB Studio export' }) } catch { /* User closed the share sheet. */ }
   }
 
   return <main className="app">
@@ -434,17 +446,18 @@ export default function App() {
         {!videoUrl ? <label className="emptyState"><Upload size={40}/><b>Import a video</b><span>Your media stays on this device</span><input type="file" accept="video/*" onChange={importVideo}/></label> : <>
           <div className="stage">
             <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const length = event.currentTarget.duration; setDuration(length); setTrimEnd(length); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>
-            <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={pickBackgroundColor}/>{tab === 'edit' && <div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div>}</div>
+            <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={pickBackgroundColor}/>{tab === 'edit' && !cropApplied && <><div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div><button className="applyCrop" onClick={() => setCropApplied(true)}><Check size={20}/>Apply crop</button></>}</div>
           </div>
           <div className="transport"><button disabled={exporting} onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" disabled={exporting} aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(currentTime)} / {formatTime(duration)}</span></div>
           <div className="fileRow"><span className="filename">{fileName}</span><label>Replace<input type="file" accept="video/*" onChange={importVideo}/></label></div>
-          {(exporting || exportMessage) && <div className={exporting ? 'exportStatus working' : 'exportStatus done'}><div><span>{exporting ? 'Exporting video' : 'Export complete'}</span><b>{exporting ? `${exportProgress}%` : exportMessage}</b></div><progress max="100" value={exportProgress}/>{!exporting && exportMessage.endsWith('.webm saved in Downloads') && <small>WEBM may appear in Downloads instead of Android Gallery.</small>}</div>}
+          {(exporting || exportMessage) && <div className={exporting ? 'exportStatus working' : 'exportStatus done'}><div><span>{exporting ? 'Exporting video' : 'Export complete'}</span><b>{exporting ? `${exportProgress}%` : exportMessage}</b></div><progress max="100" value={exportProgress}/>{!exporting && exportedFile && <button className="galleryButton" onClick={() => void saveToGallery()}><Share2 size={16}/>Save to Gallery / Share</button>} {!exporting && <small>Each export uses a new filename, so Chrome will not treat it as the same download.</small>}</div>}
         </>}
       </div>
       <aside className="panel">
         <nav className="tabs"><button className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}><Scissors/>Edit</button><button className={tab === 'filter' ? 'active' : ''} onClick={() => setTab('filter')}><SlidersHorizontal/>Adjust</button><button className={tab === 'voice' ? 'active' : ''} onClick={() => setTab('voice')}><Mic2/>Voice</button><button className={tab === 'background' ? 'active' : ''} onClick={() => setTab('background')}><ImageIcon/>BG</button></nav>
         <div className="controls">
           <div className="historyActions"><button className="secondary" disabled={!undoStack.length} onClick={undo}><Undo2 size={16}/>Undo</button><button className="secondary" disabled={!redoStack.length} onClick={redo}><Redo2 size={16}/>Redo</button></div>
+          {tab === 'edit' && cropApplied && <button className="secondary" onClick={() => setCropApplied(false)}>Edit crop area</button>}
           {tab === 'edit' && <><section className="card"><h2>Timeline</h2><p>Move the playhead and split. Select any middle clip and delete it. Magnet joins the remaining clips during export.</p></section><div className="timeline">{segments.map((segment, index) => <button key={segment.id} className={selectedSegment === index ? 'selected' : ''} style={{ flex: Math.max(.2, segment.end - segment.start) }} onClick={() => selectSegment(index)}><span>Clip {index + 1}</span><small>{formatTime(segment.end - segment.start)}</small></button>)}</div><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => changeAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
           {tab === 'filter' && <><section className="card"><h2>Visual adjustments</h2><p>Mystery Blur keeps you visibly singing while gently softening facial detail, so attention stays on the voice.</p></section><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div>{filterPreset === 'Mystery Blur' && <Slider label="Mystery blur" value={blurStrength} setValue={setBlurStrength} min={1} max={14} suffix=" px"/>}<Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlurStrength(5); setFilterPreset('None') }}>Reset adjustments</button></>}
           {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Live voice preview</h2><p>Natural singing presets use EQ, compression and real local reverb. Nothing is uploaded.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
