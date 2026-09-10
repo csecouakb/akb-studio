@@ -414,31 +414,30 @@ export default function App() {
       if (audioSource) output.addAudioTrack(audioSource)
       await output.start()
 
-      const fps = 30; const frameDuration = 1 / fps
-      const frames: { sourceTime: number; outputTime: number }[] = []
+      const totalSourceDuration = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0)
+      let completedSourceDuration = 0
       let outputOffset = 0
+      let encodedFrames = 0
       for (const segment of segments) {
-        const outputLength = (segment.end - segment.start) / speed
-        const frameCount = Math.max(1, Math.ceil(outputLength * fps))
-        for (let index = 0; index < frameCount; index += 1) frames.push({ sourceTime: Math.min(segment.end - 0.000001, segment.start + index * frameDuration * speed), outputTime: outputOffset + index * frameDuration })
-        outputOffset += outputLength
-      }
-
-      let encoded = 0
-      const samples = videoSink.samplesAtTimestamps(frames.map(frame => frame.sourceTime))
-      for await (const sample of samples) {
-        const timing = frames[encoded]
-        if (sample) {
+        for await (const sample of videoSink.samples(segment.start, segment.end)) {
+          const visibleStart = Math.max(segment.start, sample.timestamp)
+          const visibleEnd = Math.min(segment.end, sample.timestamp + sample.duration)
+          if (visibleEnd <= visibleStart) { sample.close(); continue }
           if (rawCanvas.width !== sample.displayWidth || rawCanvas.height !== sample.displayHeight) { rawCanvas.width = sample.displayWidth; rawCanvas.height = sample.displayHeight }
           const rawContext = rawCanvas.getContext('2d')
           if (!rawContext) throw new Error('Canvas rendering is unavailable.')
           rawContext.clearRect(0, 0, rawCanvas.width, rawCanvas.height); sample.draw(rawContext, 0, 0, rawCanvas.width, rawCanvas.height)
           drawExportFrame(canvas, rawCanvas, rawCanvas.width, rawCanvas.height)
-          await videoSource.add(timing.outputTime, frameDuration, { keyFrame: encoded % (fps * 2) === 0 })
+          const outputTime = outputOffset + (visibleStart - segment.start) / speed
+          const frameDuration = (visibleEnd - visibleStart) / speed
+          await videoSource.add(outputTime, frameDuration, { keyFrame: encodedFrames % 60 === 0 })
           sample.close()
+          encodedFrames += 1
+          const segmentProgress = Math.max(0, visibleEnd - segment.start)
+          if (encodedFrames % 6 === 0) setExportProgress(Math.min(88, Math.round((completedSourceDuration + segmentProgress) / totalSourceDuration * 88)))
         }
-        encoded += 1
-        if (encoded % 6 === 0 || encoded === frames.length) setExportProgress(Math.min(88, Math.round(encoded / frames.length * 88)))
+        completedSourceDuration += segment.end - segment.start
+        outputOffset += (segment.end - segment.start) / speed
       }
       videoSource.close()
       if (audioSource && processedAudio) { setExportMessage('Encoding balanced AAC audio'); await audioSource.add(processedAudio); audioSource.close() }
