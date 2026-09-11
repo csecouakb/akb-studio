@@ -167,7 +167,7 @@ export default function App() {
     const file = event.target.files?.[0]
     if (!file) return
     if (videoUrl) URL.revokeObjectURL(videoUrl)
-    setVideoUrl(URL.createObjectURL(file)); setSourceFile(file); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setCropApplied(false); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage(''); setExportedFile(null)
+    setVideoUrl(URL.createObjectURL(file)); setSourceFile(file); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setAspect('Original'); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setCropApplied(true); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage(''); setExportedFile(null)
   }
 
   const importBackground = (event: ChangeEvent<HTMLInputElement>) => {
@@ -565,10 +565,25 @@ export default function App() {
               <div className="timelineCanvas" style={{ width: `${Math.max(100, editedDuration * 7 * timelineZoom)}%` }}>
                 <div className="timeRuler">{Array.from({ length: Math.max(2, Math.ceil(editedDuration / 5) + 1) }, (_, index) => <span key={index} style={{ left: `${Math.min(100, index * 5 / Math.max(.1, editedDuration) * 100)}%` }}>{formatTime(index * 5)}</span>)}</div>
                 <div className={`trackRow ${tab === 'edit' ? 'activeTrack' : ''}`} onClick={() => setTab('edit')}><div className="trackLabel">Video</div><div className="trackLane videoLane">{segments.map((segment, index) => <button draggable key={segment.id} className={`timelineClip videoClip ${selectedSegment === index ? 'selected' : ''}`} style={{ width: `${(segment.end - segment.start) / speed / Math.max(.1, editedDuration) * 100}%` }} onDragStart={() => setDraggedSegment(index)} onDragOver={event => event.preventDefault()} onDrop={() => reorderSegment(index)} onClick={() => { setTab('edit'); selectSegment(index) }}><span>Clip {index + 1}</span><small>{formatTime((segment.end - segment.start) / speed)}</small></button>)}</div></div>
-                <div className={`trackRow ${tab === 'voice' ? 'activeTrack' : ''}`} onClick={() => setTab('voice')}><div className="trackLabel">Audio</div><div className="trackLane audioLane">{replacementAudioFile ? <button className="timelineClip audioClip" style={{ left: `${replacementAudioStart / Math.max(.1, editedDuration) * 100}%`, width: `${Math.max(3, Math.min(replacementAudioDuration - replacementAudioOffset, Math.max(0, editedDuration - replacementAudioStart)) / Math.max(.1, editedDuration) * 100)}%` }} onPointerDown={event => { audioDragRef.current = { startX: event.clientX, startTime: replacementAudioStart }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={moveAudioClip} onPointerUp={() => { audioDragRef.current = null }}><Volume2 size={14}/><span>{replacementAudioName}</span></button> : <button className="addTrackButton" onClick={() => setTab('voice')}>+ Add audio</button>}</div></div>
+                <div className={`trackRow ${tab === 'voice' ? 'activeTrack' : ''}`} onClick={() => setTab('voice')}><div className="trackLabel">Audio</div><div className="trackLane audioLane">{replacementAudioFile ? <button className="timelineClip audioClip" style={{ left: `${replacementAudioStart / Math.max(.1, editedDuration) * 100}%`, width: `${Math.max(3, Math.min(replacementAudioDuration - replacementAudioOffset, Math.max(0, editedDuration - replacementAudioStart)) / Math.max(.1, editedDuration) * 100)}%` }} onPointerDown={event => { audioDragRef.current = { startX: event.clientX, startTime: replacementAudioStart }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={moveAudioClip} onPointerUp={() => { audioDragRef.current = null }}><Volume2 size={14}/><span>{replacementAudioName}</span></button> : <label className="addTrackButton">+ Add audio<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>}</div></div>
                 <div className={`trackRow ${tab === 'background' ? 'activeTrack' : ''}`} onClick={() => setTab('background')}><div className="trackLabel">Overlay</div><div className="trackLane overlayLane"><button className="addTrackButton" disabled>+ Overlay layer</button></div></div>
-                <div className="timelinePlayhead" style={{ left: `${getEditedTimelineTime(currentTime) / Math.max(.1, editedDuration) * 100}%` }}><i/></div>
               </div>
+            </div>
+            <div className="fixedPlayhead" aria-hidden="true"><i/></div>
+            <div className="clipToolbar">
+              {tab === 'edit' ? <>
+                <button disabled={!segments.length} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - .1)), trimEnd)}>Set In</button>
+                <button disabled={!segments.length} onClick={splitAtPlayhead}><Scissors size={17}/><span>Split</span></button>
+                <button disabled={!segments.length} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + .1)))}>Set Out</button>
+                <button className="danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={17}/><span>Delete</span></button>
+                <button onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}><Volume2 size={17}/><span>{originalAudioVolume === 0 ? 'Unmute' : 'Mute'}</span></button>
+                <label><Volume2 size={17}/><span>Add Audio</span><input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>
+              </> : tab === 'voice' ? <>
+                <label><Volume2 size={17}/><span>{replacementAudioFile ? 'Replace Audio' : 'Add Audio'}</span><input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>
+                <button disabled={!replacementAudioFile} onClick={() => setReplacementAudioStart(getEditedTimelineTime(currentTime))}>Place Here</button>
+                <button disabled={!replacementAudioFile} onClick={() => setReplacementAudioVolume(value => value === 0 ? 100 : 0)}><Volume2 size={17}/><span>{replacementAudioVolume === 0 ? 'Unmute' : 'Mute'}</span></button>
+                <button className="danger" disabled={!replacementAudioFile} onClick={() => { replacementAudioRef.current?.pause(); if (replacementAudioUrl) URL.revokeObjectURL(replacementAudioUrl); setReplacementAudioFile(null); setReplacementAudioUrl(''); setReplacementAudioName('') }}><Trash2 size={17}/><span>Delete Audio</span></button>
+              </> : <><button onClick={() => setTab('filter')}>Adjust</button><button onClick={() => setTab('background')}>Background</button></>}
             </div>
           </section>
           <div className="fileRow"><span className="filename">{fileName}</span><label>Replace<input type="file" accept="video/*" onChange={importVideo}/></label></div>
