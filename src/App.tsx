@@ -4,18 +4,19 @@ import { ALL_FORMATS, AudioBufferSource, BlobSource, BufferTarget, CanvasSource,
 import { Check, Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, Share2, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
-type VoicePreset = 'Raw Clean' | 'Studio' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'iPhone Balance' | 'Dolby Style' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
+type VoicePreset = 'Raw Clean' | 'Studio' | 'Professional Vocal' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'iPhone Balance' | 'Dolby Style' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
 type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono' | 'Cinema Glow' | 'Mystery Blur'
 type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | 'Custom'
 type Segment = { id: number; start: number; end: number }
 type Crop = { x: number; y: number; width: number; height: number }
 type EditSnapshot = { segments: Segment[]; crop: Crop }
 
-const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'iPhone Balance', 'Dolby Style', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
+const voicePresets: VoicePreset[] = ['Raw Clean', 'Studio', 'Professional Vocal', 'Clear Vocal', 'Warm Vocal', 'Unplugged', 'iPhone Balance', 'Dolby Style', 'Soft Reverb', 'Studio Reverb', 'Hall Reverb', 'Echo']
 const filterPresets: FilterPreset[] = ['None', 'Vivid', 'Warm', 'Cool', 'Mono', 'Cinema Glow', 'Mystery Blur']
 const voiceSettings: Record<VoicePreset, { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number }> = {
   'Raw Clean': { gain: 100, bass: 0, treble: 1, compression: 25, reverb: 0, echo: 0 },
   Studio: { gain: 108, bass: 2, treble: 3, compression: 58, reverb: 12, echo: 0 },
+  'Professional Vocal': { gain: 108, bass: 2, treble: 4, compression: 68, reverb: 9, echo: 0 },
   'Clear Vocal': { gain: 106, bass: -1, treble: 5, compression: 62, reverb: 7, echo: 0 },
   'Warm Vocal': { gain: 105, bass: 4, treble: -1, compression: 42, reverb: 10, echo: 0 },
   Unplugged: { gain: 103, bass: 2, treble: 2, compression: 34, reverb: 16, echo: 0 },
@@ -255,6 +256,7 @@ export default function App() {
       const echoGain = context.createGain()
       const echoFeedback = context.createGain()
       const outputGain = context.createGain()
+      const limiter = context.createDynamicsCompressor(); limiter.threshold.value = -1.5; limiter.ratio.value = 20; limiter.attack.value = .003; limiter.release.value = .09; limiter.knee.value = 2
       const monitorGain = context.createGain()
       const exportAudio = context.createMediaStreamDestination()
       source.connect(bassNode).connect(trebleNode).connect(compressor)
@@ -262,8 +264,9 @@ export default function App() {
       compressor.connect(convolver).connect(reverbGain).connect(outputGain)
       compressor.connect(delay).connect(echoGain).connect(outputGain)
       delay.connect(echoFeedback).connect(delay)
-      outputGain.connect(monitorGain).connect(context.destination)
-      outputGain.connect(exportAudio)
+      outputGain.connect(limiter)
+      limiter.connect(monitorGain).connect(context.destination)
+      limiter.connect(exportAudio)
       audioContextRef.current = context; bassNodeRef.current = bassNode; trebleNodeRef.current = trebleNode; compressorRef.current = compressor
       outputGainRef.current = outputGain; monitorGainRef.current = monitorGain; reverbGainRef.current = reverbGain; echoGainRef.current = echoGain; echoFeedbackRef.current = echoFeedback
       exportAudioRef.current = exportAudio
@@ -486,7 +489,7 @@ export default function App() {
       const videoSink = new VideoSampleSink(videoTrack)
       const target = new BufferTarget()
       const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target })
-      const videoSource = new CanvasSource(canvas, { codec: 'avc', quality: new Quality(exportQuality === 1080 ? 'very-high' : 'high'), keyFrameInterval: 2 })
+      const videoSource = new CanvasSource(canvas, { codec: 'avc', quality: new Quality({ bitrate: exportQuality === 1080 ? 18_000_000 : 10_000_000, bitrateMode: 'variable' }), keyFrameInterval: 2 })
       output.addVideoTrack(videoSource, { frameRate: 30 })
 
       const processedAudio = await renderExportAudio(sourceFile, segments, speed, { gain, bass, treble, compression, reverb, echo, originalVolume: originalAudioVolume }, replacementAudioFile, { start: replacementAudioStart, offset: replacementAudioOffset, volume: replacementAudioVolume })
@@ -610,12 +613,13 @@ async function renderExportAudio(file: File, segments: Segment[], speed: number,
   const echoGain = offline.createGain(); echoGain.gain.value = settings.echo / 100
   const echoFeedback = offline.createGain(); echoFeedback.gain.value = Math.min(settings.echo / 125, .68)
   const outputGain = offline.createGain(); outputGain.gain.value = settings.gain / 100 * settings.originalVolume / 100
+  const masterLimiter = offline.createDynamicsCompressor(); masterLimiter.threshold.value = -1.5; masterLimiter.ratio.value = 20; masterLimiter.attack.value = .003; masterLimiter.release.value = .09; masterLimiter.knee.value = 2
   bassNode.connect(trebleNode).connect(compressor)
   compressor.connect(dryGain).connect(outputGain)
   compressor.connect(convolver).connect(reverbGain).connect(outputGain)
   compressor.connect(delay).connect(echoGain).connect(outputGain)
   delay.connect(echoFeedback).connect(delay)
-  outputGain.connect(offline.destination)
+  outputGain.connect(masterLimiter).connect(offline.destination)
   let offset = 0
   for (const segment of segments) {
     const source = offline.createBufferSource(); source.buffer = decoded; source.playbackRate.value = speed; source.connect(bassNode)
@@ -626,7 +630,7 @@ async function renderExportAudio(file: File, segments: Segment[], speed: number,
   if (replacementDecoded && replacement.start < outputDuration && replacement.offset < replacementDecoded.duration && replacement.volume > 0) {
     const music = offline.createBufferSource(); music.buffer = replacementDecoded
     const musicGain = offline.createGain(); musicGain.gain.value = replacement.volume / 100
-    music.connect(musicGain).connect(offline.destination)
+    music.connect(musicGain).connect(masterLimiter)
     const available = Math.min(replacementDecoded.duration - replacement.offset, outputDuration - replacement.start)
     if (available > 0) music.start(Math.max(0, replacement.start), Math.max(0, replacement.offset), available)
   }
