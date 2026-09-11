@@ -193,6 +193,23 @@ export default function App() {
     return retained / speed
   }
 
+  const seekEditedTimeline = (timelineTime: number) => {
+    let remaining = Math.max(0, Math.min(editedDuration, timelineTime))
+    for (const segment of segments) {
+      const clipDuration = (segment.end - segment.start) / speed
+      if (remaining <= clipDuration) { seek(segment.start + remaining * speed); return }
+      remaining -= clipDuration
+    }
+    const last = segments[segments.length - 1]
+    if (last) seek(Math.max(last.start, last.end - .001))
+  }
+
+  const scrubTimelineFromScroll = (element: HTMLDivElement) => {
+    const range = element.scrollWidth - element.clientWidth
+    if (range <= 0 || !editedDuration) return
+    seekEditedTimeline(element.scrollLeft / range * editedDuration)
+  }
+
   const editedDuration = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) / speed
 
   const moveAudioClip = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -541,12 +558,12 @@ export default function App() {
           <div className="transport"><button disabled={exporting} onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" disabled={exporting} aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(getEditedTimelineTime(currentTime))} / {formatTime(editedDuration)}</span></div>
           <section className="studioTimeline">
             <div className="timelineHeader"><b>Timeline</b><label>Zoom <input type="range" min="1" max="4" step=".25" value={timelineZoom} onChange={event => setTimelineZoom(Number(event.target.value))}/></label></div>
-            <div className="timelineScroller" ref={timelineRef}>
+            <div className="timelineScroller" ref={timelineRef} onScroll={event => scrubTimelineFromScroll(event.currentTarget)}>
               <div className="timelineCanvas" style={{ width: `${Math.max(100, editedDuration * 7 * timelineZoom)}%` }}>
                 <div className="timeRuler">{Array.from({ length: Math.max(2, Math.ceil(editedDuration / 5) + 1) }, (_, index) => <span key={index} style={{ left: `${Math.min(100, index * 5 / Math.max(.1, editedDuration) * 100)}%` }}>{formatTime(index * 5)}</span>)}</div>
-                <div className="trackRow"><div className="trackLabel">Video</div><div className="trackLane videoLane">{segments.map((segment, index) => <button draggable key={segment.id} className={`timelineClip videoClip ${selectedSegment === index ? 'selected' : ''}`} style={{ width: `${(segment.end - segment.start) / speed / Math.max(.1, editedDuration) * 100}%` }} onDragStart={() => setDraggedSegment(index)} onDragOver={event => event.preventDefault()} onDrop={() => reorderSegment(index)} onClick={() => selectSegment(index)}><span>Clip {index + 1}</span><small>{formatTime((segment.end - segment.start) / speed)}</small></button>)}</div></div>
-                <div className="trackRow"><div className="trackLabel">Audio</div><div className="trackLane audioLane">{replacementAudioFile ? <button className="timelineClip audioClip" style={{ left: `${replacementAudioStart / Math.max(.1, editedDuration) * 100}%`, width: `${Math.max(3, Math.min(replacementAudioDuration - replacementAudioOffset, Math.max(0, editedDuration - replacementAudioStart)) / Math.max(.1, editedDuration) * 100)}%` }} onPointerDown={event => { audioDragRef.current = { startX: event.clientX, startTime: replacementAudioStart }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={moveAudioClip} onPointerUp={() => { audioDragRef.current = null }}><Volume2 size={14}/><span>{replacementAudioName}</span></button> : <button className="addTrackButton" onClick={() => setTab('voice')}>+ Add audio</button>}</div></div>
-                <div className="trackRow"><div className="trackLabel">Overlay</div><div className="trackLane overlayLane"><button className="addTrackButton" disabled>+ Overlay layer</button></div></div>
+                <div className={`trackRow ${tab === 'edit' ? 'activeTrack' : ''}`} onClick={() => setTab('edit')}><div className="trackLabel">Video</div><div className="trackLane videoLane">{segments.map((segment, index) => <button draggable key={segment.id} className={`timelineClip videoClip ${selectedSegment === index ? 'selected' : ''}`} style={{ width: `${(segment.end - segment.start) / speed / Math.max(.1, editedDuration) * 100}%` }} onDragStart={() => setDraggedSegment(index)} onDragOver={event => event.preventDefault()} onDrop={() => reorderSegment(index)} onClick={() => { setTab('edit'); selectSegment(index) }}><span>Clip {index + 1}</span><small>{formatTime((segment.end - segment.start) / speed)}</small></button>)}</div></div>
+                <div className={`trackRow ${tab === 'voice' ? 'activeTrack' : ''}`} onClick={() => setTab('voice')}><div className="trackLabel">Audio</div><div className="trackLane audioLane">{replacementAudioFile ? <button className="timelineClip audioClip" style={{ left: `${replacementAudioStart / Math.max(.1, editedDuration) * 100}%`, width: `${Math.max(3, Math.min(replacementAudioDuration - replacementAudioOffset, Math.max(0, editedDuration - replacementAudioStart)) / Math.max(.1, editedDuration) * 100)}%` }} onPointerDown={event => { audioDragRef.current = { startX: event.clientX, startTime: replacementAudioStart }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={moveAudioClip} onPointerUp={() => { audioDragRef.current = null }}><Volume2 size={14}/><span>{replacementAudioName}</span></button> : <button className="addTrackButton" onClick={() => setTab('voice')}>+ Add audio</button>}</div></div>
+                <div className={`trackRow ${tab === 'background' ? 'activeTrack' : ''}`} onClick={() => setTab('background')}><div className="trackLabel">Overlay</div><div className="trackLane overlayLane"><button className="addTrackButton" disabled>+ Overlay layer</button></div></div>
                 <div className="timelinePlayhead" style={{ left: `${getEditedTimelineTime(currentTime) / Math.max(.1, editedDuration) * 100}%` }}><i/></div>
               </div>
             </div>
