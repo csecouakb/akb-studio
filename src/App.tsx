@@ -34,6 +34,7 @@ const formatTime = (seconds: number) => {
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const replacementAudioRef = useRef<HTMLAudioElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const bassNodeRef = useRef<BiquadFilterNode | null>(null)
   const trebleNodeRef = useRef<BiquadFilterNode | null>(null)
@@ -51,6 +52,14 @@ export default function App() {
 
   const [videoUrl, setVideoUrl] = useState('')
   const [sourceFile, setSourceFile] = useState<File | null>(null)
+  const [replacementAudioFile, setReplacementAudioFile] = useState<File | null>(null)
+  const [replacementAudioUrl, setReplacementAudioUrl] = useState('')
+  const [replacementAudioName, setReplacementAudioName] = useState('')
+  const [replacementAudioDuration, setReplacementAudioDuration] = useState(0)
+  const [replacementAudioStart, setReplacementAudioStart] = useState(0)
+  const [replacementAudioOffset, setReplacementAudioOffset] = useState(0)
+  const [replacementAudioVolume, setReplacementAudioVolume] = useState(100)
+  const [originalAudioVolume, setOriginalAudioVolume] = useState(100)
   const [fileName, setFileName] = useState('')
   const [tab, setTab] = useState<Tab>('edit')
   const [playing, setPlaying] = useState(false)
@@ -134,7 +143,7 @@ export default function App() {
     const now = audioContextRef.current?.currentTime ?? 0
     bassNodeRef.current?.gain.setTargetAtTime(bass, now, 0.02)
     trebleNodeRef.current?.gain.setTargetAtTime(treble, now, 0.02)
-    outputGainRef.current?.gain.setTargetAtTime(gain / 100, now, 0.02)
+    outputGainRef.current?.gain.setTargetAtTime(gain / 100 * originalAudioVolume / 100, now, 0.02)
     reverbGainRef.current?.gain.setTargetAtTime(reverb / 100, now, 0.02)
     echoGainRef.current?.gain.setTargetAtTime(echo / 100, now, 0.02)
     echoFeedbackRef.current?.gain.setTargetAtTime(Math.min(echo / 125, 0.68), now, 0.02)
@@ -143,7 +152,11 @@ export default function App() {
       compressor.threshold.setTargetAtTime(-12 - compression * 0.2, now, 0.02)
       compressor.ratio.setTargetAtTime(1 + compression * 0.055, now, 0.02)
     }
-  }, [gain, bass, treble, compression, reverb, echo])
+  }, [gain, bass, treble, compression, reverb, echo, originalAudioVolume])
+
+  useEffect(() => {
+    if (replacementAudioRef.current) replacementAudioRef.current.volume = replacementAudioVolume / 100
+  }, [replacementAudioVolume, replacementAudioUrl])
 
   const importVideo = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -157,6 +170,34 @@ export default function App() {
     if (!file) return
     if (bgImage) URL.revokeObjectURL(bgImage)
     setBgImage(URL.createObjectURL(file))
+  }
+
+  const importReplacementAudio = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (replacementAudioUrl) URL.revokeObjectURL(replacementAudioUrl)
+    setReplacementAudioFile(file); setReplacementAudioUrl(URL.createObjectURL(file)); setReplacementAudioName(file.name); setReplacementAudioDuration(0); setReplacementAudioOffset(0)
+  }
+
+  const getEditedTimelineTime = (sourceTime: number) => {
+    let retained = 0
+    for (const segment of segments) {
+      if (sourceTime < segment.start) return retained / speed
+      if (sourceTime <= segment.end) return (retained + sourceTime - segment.start) / speed
+      retained += segment.end - segment.start
+    }
+    return retained / speed
+  }
+
+  const syncReplacementAudio = (sourceTime: number, play: boolean) => {
+    const audio = replacementAudioRef.current
+    if (!audio || !replacementAudioUrl) return
+    const wanted = getEditedTimelineTime(sourceTime) - replacementAudioStart + replacementAudioOffset
+    const usableEnd = replacementAudioDuration || audio.duration || 0
+    if (wanted < replacementAudioOffset || wanted >= usableEnd) { audio.pause(); return }
+    if (Math.abs(audio.currentTime - wanted) > .12) audio.currentTime = wanted
+    if (play && audio.paused) void audio.play().catch(() => undefined)
+    if (!play) audio.pause()
   }
 
   const ensureAudio = async () => {
@@ -210,7 +251,8 @@ export default function App() {
       const end = segment?.end ?? trimEnd
       if (video.currentTime < start || video.currentTime >= end) video.currentTime = start
       await video.play()
-    } else video.pause()
+      syncReplacementAudio(video.currentTime, true)
+    } else { video.pause(); syncReplacementAudio(video.currentTime, false) }
   }
 
   const seek = (value: number) => {
@@ -230,6 +272,7 @@ export default function App() {
       else { video.pause(); const first = segments[0]; video.currentTime = first?.start ?? start; if (first) { setSelectedSegment(0); setTrimStart(first.start); setTrimEnd(first.end) } }
     }
     setCurrentTime(video.currentTime)
+    syncReplacementAudio(video.currentTime, !video.paused)
   }
 
   const presetFilter = useMemo(() => {
@@ -409,7 +452,7 @@ export default function App() {
       const videoSource = new CanvasSource(canvas, { codec: 'avc', quality: new Quality(exportQuality === 1080 ? 'very-high' : 'high'), keyFrameInterval: 2 })
       output.addVideoTrack(videoSource, { frameRate: 30 })
 
-      const processedAudio = await renderExportAudio(sourceFile, segments, speed, { gain, bass, treble, compression, reverb, echo })
+      const processedAudio = await renderExportAudio(sourceFile, segments, speed, { gain, bass, treble, compression, reverb, echo, originalVolume: originalAudioVolume }, replacementAudioFile, { start: replacementAudioStart, offset: replacementAudioOffset, volume: replacementAudioVolume })
       const audioSource = processedAudio ? new AudioBufferSource({ codec: 'aac', quality: new Quality('high') }) : null
       if (audioSource) output.addAudioTrack(audioSource)
       await output.start()
@@ -471,7 +514,8 @@ export default function App() {
       <div className="previewPanel">
         {!videoUrl ? <label className="emptyState"><Upload size={40}/><b>Import a video</b><span>Your media stays on this device</span><input type="file" accept="video/*" onChange={importVideo}/></label> : <>
           <div className="stage">
-            <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const length = event.currentTarget.duration; setDuration(length); setTrimEnd(length); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>
+            <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const length = event.currentTarget.duration; setDuration(length); setTrimEnd(length); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => { setPlaying(false); replacementAudioRef.current?.pause() }} onEnded={() => { setPlaying(false); replacementAudioRef.current?.pause() }}/>
+            {replacementAudioUrl && <audio ref={replacementAudioRef} src={replacementAudioUrl} preload="metadata" onLoadedMetadata={event => setReplacementAudioDuration(event.currentTarget.duration)}/>} 
             <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={pickBackgroundColor}/>{tab === 'edit' && !cropApplied && <><div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div><button className="applyCrop" onClick={() => setCropApplied(true)}><Check size={20}/>Apply crop</button></>}</div>
           </div>
           <div className="transport"><button disabled={exporting} onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" disabled={exporting} aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(currentTime)} / {formatTime(duration)}</span></div>
@@ -486,7 +530,7 @@ export default function App() {
           {tab === 'edit' && cropApplied && <button className="secondary" onClick={() => setCropApplied(false)}>Edit crop area</button>}
           {tab === 'edit' && <><section className="card"><h2>Timeline</h2><p>Move the playhead and split. Select any middle clip and delete it. Magnet joins the remaining clips during export.</p></section><div className="timeline">{segments.map((segment, index) => <button key={segment.id} className={selectedSegment === index ? 'selected' : ''} style={{ flex: Math.max(.2, segment.end - segment.start) }} onClick={() => selectSegment(index)}><span>Clip {index + 1}</span><small>{formatTime(segment.end - segment.start)}</small></button>)}</div><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => changeAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
           {tab === 'filter' && <><section className="card"><h2>Visual adjustments</h2><p>Mystery Blur keeps you visibly singing while gently softening facial detail, so attention stays on the voice.</p></section><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div>{filterPreset === 'Mystery Blur' && <Slider label="Mystery blur" value={blurStrength} setValue={setBlurStrength} min={1} max={14} suffix=" px"/>}<Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlurStrength(5); setFilterPreset('None') }}>Reset adjustments</button></>}
-          {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Live voice preview</h2><p>Natural singing presets use EQ, compression and real local reverb. Nothing is uploaded.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
+          {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Audio tracks</h2><p>Mute the camera audio or mix a separate song, vocal or mastered track at an exact timeline position.</p></section><Slider label="Original video audio" value={originalAudioVolume} setValue={setOriginalAudioVolume} min={0} max={100} suffix="%"/><button className={originalAudioVolume === 0 ? 'secondary activeTool' : 'secondary'} onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}>{originalAudioVolume === 0 ? 'Unmute original audio' : 'Mute original audio'}</button><label className="secondary uploadBg"><Volume2 size={16}/>Import replacement audio<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>{replacementAudioFile && <section className="card audioTrackCard"><h2>{replacementAudioName}</h2><p>{formatTime(replacementAudioDuration)} audio placed at {formatTime(replacementAudioStart)}</p><button className="secondary" onClick={() => setReplacementAudioStart(getEditedTimelineTime(currentTime))}>Place at playhead</button><Slider label="Timeline start" value={replacementAudioStart} setValue={setReplacementAudioStart} min={0} max={Math.max(.1, segments.reduce((sum, item) => sum + item.end - item.start, 0) / speed)} step={.05} suffix=" s"/><Slider label="Start audio from" value={replacementAudioOffset} setValue={setReplacementAudioOffset} min={0} max={Math.max(.1, replacementAudioDuration)} step={.05} suffix=" s"/><Slider label="Imported audio volume" value={replacementAudioVolume} setValue={setReplacementAudioVolume} min={0} max={150} suffix="%"/><button className="secondary danger" onClick={() => { replacementAudioRef.current?.pause(); URL.revokeObjectURL(replacementAudioUrl); setReplacementAudioFile(null); setReplacementAudioUrl(''); setReplacementAudioName('') }}>Remove imported audio</button></section>}<section className="card"><h2><Mic2 size={17}/>Voice Studio</h2><p>Natural singing presets use EQ, compression and local reverb on the original video audio.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
           {tab === 'background' && <><section className="card"><h2>Background replacement</h2><p>Changes appear instantly in the preview. Auto Detect samples the corners; Pick Color lets you tap the background.</p></section><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={autoDetectBackground}>Auto Detect</button><button className={pickingColor ? 'secondary activeTool' : 'secondary'} disabled={!videoUrl} onClick={() => setPickingColor(value => !value)}>Pick Color</button></div><label className="toggleRow"><input type="checkbox" checked={chromaEnabled} onChange={event => setChromaEnabled(event.target.checked)}/><span>Enable chroma key</span></label>{chromaEnabled && <><label className="toggleRow"><input type="checkbox" checked={protectSkin} onChange={event => setProtectSkin(event.target.checked)}/><span>Protect face and skin</span></label><label className="field">Remove color<input type="color" value={chromaColor} onChange={event => setChromaColor(event.target.value)}/></label><Slider label="Color tolerance" value={chromaThreshold} setValue={setChromaThreshold} min={10} max={140}/></>}<label className="field">New background color<input type="color" value={bgColor} onChange={event => setBgColor(event.target.value)}/></label><label className="secondary uploadBg">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label>{bgImage && <button className="secondary" onClick={() => { URL.revokeObjectURL(bgImage); setBgImage('') }}>Remove image</button>}</>}
         </div>
       </aside>
@@ -494,15 +538,19 @@ export default function App() {
   </main>
 }
 
-async function renderExportAudio(file: File, segments: Segment[], speed: number, settings: { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number }) {
+async function renderExportAudio(file: File, segments: Segment[], speed: number, settings: { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number; originalVolume: number }, replacementFile: File | null, replacement: { start: number; offset: number; volume: number }) {
   const DecodeContext = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
   if (!DecodeContext) return null
   const decoder = new DecodeContext()
   let decoded: AudioBuffer
-  try { decoded = await decoder.decodeAudioData(await file.arrayBuffer()) } finally { await decoder.close() }
+  let replacementDecoded: AudioBuffer | null = null
+  try {
+    decoded = await decoder.decodeAudioData(await file.arrayBuffer())
+    if (replacementFile) replacementDecoded = await decoder.decodeAudioData(await replacementFile.arrayBuffer())
+  } finally { await decoder.close() }
   const outputDuration = segments.reduce((sum, segment) => sum + (segment.end - segment.start) / speed, 0)
   const sampleRate = Math.min(48000, decoded.sampleRate)
-  const offline = new OfflineAudioContext(Math.min(2, decoded.numberOfChannels), Math.max(1, Math.ceil(outputDuration * sampleRate)), sampleRate)
+  const offline = new OfflineAudioContext(Math.min(2, Math.max(decoded.numberOfChannels, replacementDecoded?.numberOfChannels || 0)), Math.max(1, Math.ceil(outputDuration * sampleRate)), sampleRate)
   const bassNode = offline.createBiquadFilter(); bassNode.type = 'lowshelf'; bassNode.frequency.value = 180; bassNode.gain.value = settings.bass
   const trebleNode = offline.createBiquadFilter(); trebleNode.type = 'highshelf'; trebleNode.frequency.value = 3500; trebleNode.gain.value = settings.treble
   const compressor = offline.createDynamicsCompressor(); compressor.threshold.value = -12 - settings.compression * .2; compressor.ratio.value = 1 + settings.compression * .055; compressor.attack.value = .012; compressor.release.value = .22; compressor.knee.value = 16
@@ -512,7 +560,7 @@ async function renderExportAudio(file: File, segments: Segment[], speed: number,
   const delay = offline.createDelay(1); delay.delayTime.value = .24
   const echoGain = offline.createGain(); echoGain.gain.value = settings.echo / 100
   const echoFeedback = offline.createGain(); echoFeedback.gain.value = Math.min(settings.echo / 125, .68)
-  const outputGain = offline.createGain(); outputGain.gain.value = settings.gain / 100
+  const outputGain = offline.createGain(); outputGain.gain.value = settings.gain / 100 * settings.originalVolume / 100
   bassNode.connect(trebleNode).connect(compressor)
   compressor.connect(dryGain).connect(outputGain)
   compressor.connect(convolver).connect(reverbGain).connect(outputGain)
@@ -525,6 +573,13 @@ async function renderExportAudio(file: File, segments: Segment[], speed: number,
     const sourceDuration = Math.max(0, Math.min(decoded.duration, segment.end) - Math.max(0, segment.start))
     if (sourceDuration > 0) source.start(offset, Math.max(0, segment.start), sourceDuration)
     offset += sourceDuration / speed
+  }
+  if (replacementDecoded && replacement.start < outputDuration && replacement.offset < replacementDecoded.duration && replacement.volume > 0) {
+    const music = offline.createBufferSource(); music.buffer = replacementDecoded
+    const musicGain = offline.createGain(); musicGain.gain.value = replacement.volume / 100
+    music.connect(musicGain).connect(offline.destination)
+    const available = Math.min(replacementDecoded.duration - replacement.offset, outputDuration - replacement.start)
+    if (available > 0) music.start(Math.max(0, replacement.start), Math.max(0, replacement.offset), available)
   }
   return offline.startRendering()
 }
