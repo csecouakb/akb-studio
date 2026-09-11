@@ -196,9 +196,13 @@ export default function App() {
 
   const seekEditedTimeline = (timelineTime: number) => {
     let remaining = Math.max(0, Math.min(editedDuration, timelineTime))
-    for (const segment of segments) {
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index]
       const clipDuration = (segment.end - segment.start) / speed
-      if (remaining <= clipDuration) { seek(segment.start + remaining * speed); return }
+      if (remaining <= clipDuration) {
+        setSelectedSegment(index); setTrimStart(segment.start); setTrimEnd(segment.end)
+        seek(segment.start + remaining * speed); return
+      }
       remaining -= clipDuration
     }
     const last = segments[segments.length - 1]
