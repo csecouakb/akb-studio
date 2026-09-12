@@ -22,6 +22,8 @@ export const installTimelineEnhancements = () => {
   let lastScrollLeft = 0
   let smoothFrame = 0
   let audioSourceDelta: number | null = null
+  let forwardingAction = false
+  let lastSelectedClip: HTMLButtonElement | null = null
 
   const setDragLock = (locked: boolean) => {
     if (!scroller) return
@@ -44,12 +46,23 @@ export const installTimelineEnhancements = () => {
     timeline.appendChild(host)
   }
 
+  const syncHistoryDisabledState = () => {
+    const originals = document.querySelectorAll<HTMLButtonElement>('.historyActions button')
+    const undo = document.querySelector<HTMLButtonElement>('.timelineUndo')
+    const redo = document.querySelector<HTMLButtonElement>('.timelineRedo')
+    if (undo && originals[0]) undo.disabled = originals[0].disabled
+    if (redo && originals[1]) redo.disabled = originals[1].disabled
+  }
+
   const refresh = () => {
     scroller = document.querySelector<HTMLDivElement>('.timelineScroller')
     canvas = document.querySelector<HTMLDivElement>('.timelineCanvas')
     video = document.querySelector<HTMLVideoElement>('video.sourceVideo')
     replacementAudio = document.querySelector<HTMLAudioElement>('.stage audio')
     installHistoryButtons()
+    syncHistoryDisabledState()
+    const selected = document.querySelector<HTMLButtonElement>('.videoClip.selected')
+    if (selected) lastSelectedClip = selected
     if (scroller && !scroller.dataset.enhancedScroll) {
       scroller.dataset.enhancedScroll = '1'
       lastScrollLeft = scroller.scrollLeft
@@ -58,7 +71,7 @@ export const installTimelineEnhancements = () => {
     setDragLock(Boolean(document.querySelector<HTMLElement>('.videoClip.dragUnlocked')))
     if (!autoSelectedOnce) {
       const firstVideoClip = document.querySelector<HTMLButtonElement>('.videoClip')
-      if (firstVideoClip) { autoSelectedOnce = true; firstVideoClip.click() }
+      if (firstVideoClip) { autoSelectedOnce = true; firstVideoClip.click(); lastSelectedClip = firstVideoClip }
     }
   }
 
@@ -136,6 +149,44 @@ export const installTimelineEnhancements = () => {
     })
   }
 
+  const isActionButton = (target: Element | null, text: string) => {
+    const button = target?.closest<HTMLButtonElement>('button')
+    return button && button.textContent?.trim().toLowerCase().includes(text)
+  }
+
+  const onClickCapture = (event: MouseEvent) => {
+    const target = event.target as Element | null
+    const clip = target?.closest<HTMLButtonElement>('.videoClip')
+    if (clip) lastSelectedClip = clip
+    if (forwardingAction) return
+
+    const splitButton = isActionButton(target, 'split')
+    const deleteButton = isActionButton(target, 'delete')
+    if (!splitButton && !deleteButton) return
+
+    const button = target?.closest<HTMLButtonElement>('button')
+    if (!button || button.disabled) return
+    event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation()
+
+    const selected = document.querySelector<HTMLButtonElement>('.videoClip.selected') || lastSelectedClip
+    selected?.click()
+    if (splitButton && scroller) scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      forwardingAction = true
+      button.click()
+      forwardingAction = false
+      if (splitButton) {
+        requestAnimationFrame(() => {
+          const clips = [...document.querySelectorAll<HTMLButtonElement>('.videoClip')]
+          const newest = clips.find(item => item !== selected && item.classList.contains('selected')) || clips[Math.min(clips.length - 1, Math.max(1, clips.indexOf(selected as HTMLButtonElement) + 1))]
+          newest?.classList.add('justSplit')
+          window.setTimeout(() => newest?.classList.remove('justSplit'), 700)
+        })
+      }
+    }))
+  }
+
   const onVideoPlay = () => { visualOffset = 0; if (canvas) canvas.style.transform = ''; captureAudioSourceDelta() }
   const onVideoPause = () => { if (smoothFrame) cancelAnimationFrame(smoothFrame); smoothFrame = 0; visualOffset = 0; if (canvas) canvas.style.transform = '' }
   const onVideoTimeUpdate = () => keepAudioWithVideoCuts()
@@ -146,16 +197,18 @@ export const installTimelineEnhancements = () => {
     const previousVideo = video; refresh()
     if (video && video !== previousVideo) { video.addEventListener('play', onVideoPlay); video.addEventListener('pause', onVideoPause); video.addEventListener('timeupdate', onVideoTimeUpdate) }
   })
-  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] })
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'disabled'] })
   document.addEventListener('touchstart', onTouchStart, { passive: true })
   document.addEventListener('touchmove', onTouchMove, { passive: false, capture: true })
   document.addEventListener('touchend', onTouchEnd, { passive: true })
   document.addEventListener('touchcancel', onTouchEnd, { passive: true })
+  document.addEventListener('click', onClickCapture, true)
 
   return () => {
     observer.disconnect(); if (smoothFrame) cancelAnimationFrame(smoothFrame)
     scroller?.removeEventListener('scroll', onTimelineScroll)
     video?.removeEventListener('play', onVideoPlay); video?.removeEventListener('pause', onVideoPause); video?.removeEventListener('timeupdate', onVideoTimeUpdate)
     document.removeEventListener('touchstart', onTouchStart); document.removeEventListener('touchmove', onTouchMove, true); document.removeEventListener('touchend', onTouchEnd); document.removeEventListener('touchcancel', onTouchEnd)
+    document.removeEventListener('click', onClickCapture, true)
   }
 }
