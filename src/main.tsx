@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import './emergencyStability'
 import App from './App'
 import './styles.css'
 import './editor.css'
