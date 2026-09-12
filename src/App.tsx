@@ -4,6 +4,7 @@ import { ALL_FORMATS, AudioBufferSource, BlobSource, BufferTarget, CanvasSource,
 import { Check, Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, RotateCcw, Scissors, Share2, SlidersHorizontal, Trash2, Undo2, Upload, Volume2 } from 'lucide-react'
 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
+type ToolSheet = 'crop' | 'ratio' | 'speed' | 'volume' | 'adjust' | 'audio' | 'background' | null
 type VoicePreset = 'Raw Clean' | 'Studio' | 'Professional Vocal' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'iPhone Balance' | 'Dolby Style' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
 type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono' | 'Cinema Glow' | 'Mystery Blur'
 type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | '4:5' | 'Custom'
@@ -54,6 +55,7 @@ export default function App() {
   const timelineRef = useRef<HTMLDivElement>(null)
   const seekFrameRef = useRef<number | null>(null)
   const pendingSeekRef = useRef<number | null>(null)
+  const playheadSourceRef = useRef(0)
   const scrubEndRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clipPointerRef = useRef<{ index: number; x: number; y: number; pointerId: number } | null>(null)
@@ -75,6 +77,7 @@ export default function App() {
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 })
   const [fileName, setFileName] = useState('')
   const [tab, setTab] = useState<Tab>('edit')
+  const [toolSheet, setToolSheet] = useState<ToolSheet>(null)
   const [playing, setPlaying] = useState(false)
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
@@ -128,12 +131,12 @@ export default function App() {
     return sourceRatio
   }
 
-  const changeAspect = (value: AspectRatio) => {
+  const changeAspect = (value: AspectRatio, editingCrop = false) => {
     const video = videoRef.current
     setAspect(value)
     if (!video?.videoWidth) return
     rememberEdit()
-    setCropApplied(false)
+    setCropApplied(!editingCrop)
     const sourceRatio = video.videoWidth / video.videoHeight
     const targetRatio = getTargetRatio(value)
     const width = sourceRatio > targetRatio ? targetRatio / sourceRatio : 1
@@ -215,7 +218,8 @@ export default function App() {
       const clipDuration = (segment.end - segment.start) / speed
       if (remaining <= clipDuration) {
         setSelectedSegment(index); setTrimStart(segment.start); setTrimEnd(segment.end)
-        seek(segment.start + remaining * speed); return
+        const sourceTime = segment.start + remaining * speed
+        playheadSourceRef.current = sourceTime; seek(sourceTime); return
       }
       remaining -= clipDuration
     }
@@ -348,6 +352,7 @@ export default function App() {
   }
 
   const seek = (value: number) => {
+    playheadSourceRef.current = value
     pendingSeekRef.current = value
     if (seekFrameRef.current !== null) return
     seekFrameRef.current = requestAnimationFrame(() => {
@@ -395,17 +400,19 @@ export default function App() {
   const selectSegment = (index: number) => {
     const segment = segments[index]
     if (!segment) return
-    setSelectedSegment(index); setTrimStart(segment.start); setTrimEnd(segment.end); seek(segment.start)
+    setSelectedSegment(index); setTrimStart(segment.start); setTrimEnd(segment.end)
+    if (currentTime < segment.start || currentTime > segment.end) { playheadSourceRef.current = segment.start; seek(segment.start) }
   }
 
   const splitAtPlayhead = () => {
     const segment = segments[selectedSegment]
-    if (!segment || currentTime <= segment.start + 0.1 || currentTime >= segment.end - 0.1) return
+    const splitTime = playheadSourceRef.current || currentTime
+    if (!segment || splitTime <= segment.start + 0.1 || splitTime >= segment.end - 0.1) return
     rememberEdit()
     const nextId = Math.max(0, ...segments.map(item => item.id)) + 1
     const next = [...segments]
-    next.splice(selectedSegment, 1, { id: segment.id, start: segment.start, end: currentTime }, { id: nextId, start: currentTime, end: segment.end })
-    setSegments(next); setTrimEnd(currentTime)
+    next.splice(selectedSegment, 1, { id: segment.id, start: segment.start, end: splitTime }, { id: nextId, start: splitTime, end: segment.end })
+    setSegments(next); setTrimEnd(splitTime); setClipSelected(true)
   }
 
   const deleteSelected = () => {
@@ -616,7 +623,7 @@ export default function App() {
           <div className="stage">
             <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const video = event.currentTarget; const length = video.duration; setDuration(length); setTrimEnd(length); setSourceSize({ width: video.videoWidth, height: video.videoHeight }); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => { setPlaying(false); replacementAudioRef.current?.pause() }} onEnded={() => { setPlaying(false); replacementAudioRef.current?.pause() }}/>
             {replacementAudioUrl && <audio ref={replacementAudioRef} src={replacementAudioUrl} preload="metadata" onLoadedMetadata={event => setReplacementAudioDuration(event.currentTarget.duration)}/>} 
-            <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={event => { if (cropApplied && !pickingColor) setClipSelected(false); pickBackgroundColor(event) }}/>{tab === 'edit' && !cropApplied && <><div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div><button className="applyCrop" onClick={() => setCropApplied(true)}><Check size={20}/>Apply crop</button></>}</div>
+            <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={event => { if (cropApplied && !pickingColor) setClipSelected(false); pickBackgroundColor(event) }}/>{tab === 'edit' && !cropApplied && <div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div>}</div>
           </div>
           <div className="transport"><button disabled={exporting} onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" disabled={exporting} aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(getEditedTimelineTime(currentTime))} / {formatTime(editedDuration)}</span></div>
           <section className="studioTimeline">
@@ -632,26 +639,38 @@ export default function App() {
             <div className="fixedPlayhead" aria-hidden="true"><i/></div>
             <div className="clipToolbar">
               {clipSelected && tab === 'edit' ? <>
-                <button onClick={() => setCropApplied(false)}>Crop</button>
+                <button onClick={() => { setToolSheet('crop'); setCropApplied(false) }}>Crop</button>
                 <button disabled={!segments.length} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - .1)), trimEnd)}>Set In</button>
                 <button disabled={!segments.length} onClick={splitAtPlayhead}><Scissors size={17}/><span>Split</span></button>
                 <button disabled={!segments.length} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + .1)))}>Set Out</button>
-                <button onClick={() => setTab('edit')}>Speed</button>
+                <button onClick={() => setToolSheet('speed')}>Speed</button>
                 <button className="danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={17}/><span>Delete</span></button>
-                <button onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}><Volume2 size={17}/><span>{originalAudioVolume === 0 ? 'Unmute' : 'Mute'}</span></button>
+                <button onClick={() => setToolSheet('volume')}><Volume2 size={17}/><span>Volume</span></button>
                 <label><Volume2 size={17}/><span>Add Audio</span><input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>
               </> : tab === 'voice' ? <>
                 <label><Volume2 size={17}/><span>{replacementAudioFile ? 'Replace Audio' : 'Add Audio'}</span><input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>
                 <button disabled={!replacementAudioFile} onClick={() => setReplacementAudioStart(getEditedTimelineTime(currentTime))}>Place Here</button>
                 <button disabled={!replacementAudioFile} onClick={() => setReplacementAudioVolume(value => value === 0 ? 100 : 0)}><Volume2 size={17}/><span>{replacementAudioVolume === 0 ? 'Unmute' : 'Mute'}</span></button>
                 <button className="danger" disabled={!replacementAudioFile} onClick={() => { replacementAudioRef.current?.pause(); if (replacementAudioUrl) URL.revokeObjectURL(replacementAudioUrl); setReplacementAudioFile(null); setReplacementAudioUrl(''); setReplacementAudioName('') }}><Trash2 size={17}/><span>Delete Audio</span></button>
-              </> : <><button onClick={() => { setClipSelected(false); setTab('edit') }}>Edit</button><button onClick={() => { setClipSelected(false); setTab('filter') }}>Adjust</button><button onClick={() => { setClipSelected(false); setTab('voice') }}>Audio</button><button onClick={() => { setClipSelected(false); setTab('background') }}>Background</button></>}
+              </> : <><button onClick={() => { setClipSelected(false); setTab('edit'); setToolSheet('ratio') }}>Canvas</button><button onClick={() => { setClipSelected(false); setTab('filter'); setToolSheet('adjust') }}>Adjust</button><button onClick={() => { setClipSelected(false); setTab('voice'); setToolSheet('audio') }}>Audio</button><button onClick={() => { setClipSelected(false); setTab('background'); setToolSheet('background') }}>Background</button></>}
             </div>
           </section>
           <div className="fileRow"><span className="filename">{fileName}</span><label>Replace<input type="file" accept="video/*" onChange={importVideo}/></label></div>
           {(exporting || exportMessage) && <div className={exporting ? 'exportStatus working' : 'exportStatus done'}><div><span>{exporting ? 'Exporting video' : 'Export complete'}</span><b>{exporting ? `${exportProgress}%` : exportMessage}</b></div><progress max="100" value={exportProgress}/>{!exporting && exportedFile && <button className="galleryButton" onClick={() => void saveToGallery()}><Share2 size={16}/>Save to Gallery / Share</button>} {!exporting && <small>Each export uses a new filename, so Chrome will not treat it as the same download.</small>}</div>}
         </>}
       </div>
+      {toolSheet && <section className="toolSheet" role="dialog" aria-label={`${toolSheet} tools`}>
+        <header><b>{toolSheet === 'ratio' ? 'Canvas ratio' : toolSheet[0].toUpperCase() + toolSheet.slice(1)}</b><button className="confirmTool" aria-label="Apply" onClick={() => { if (toolSheet === 'crop') setCropApplied(true); setToolSheet(null) }}><Check size={24}/></button></header>
+        <div className="toolSheetBody">
+          {(toolSheet === 'crop' || toolSheet === 'ratio') && <div className="ratioChoices">{(['Original', '9:16', '16:9', '1:1', '4:5'] as AspectRatio[]).map(value => <button key={value} className={aspect === value ? 'selected' : ''} onClick={() => changeAspect(value, toolSheet === 'crop')}>{value}</button>)}</div>}
+          {toolSheet === 'crop' && <p>Drag the four corners in the monitor. The selected ratio stays locked.</p>}
+          {toolSheet === 'speed' && <Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/>}
+          {toolSheet === 'volume' && <><Slider label="Original video volume" value={originalAudioVolume} setValue={setOriginalAudioVolume} min={0} max={100} suffix="%"/><button className="sheetButton" onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}>{originalAudioVolume === 0 ? 'Unmute clip' : 'Mute clip'}</button></>}
+          {toolSheet === 'adjust' && <><div className="ratioChoices filterChoices">{filterPresets.map(value => <button key={value} className={filterPreset === value ? 'selected' : ''} onClick={() => setFilterPreset(value)}>{value}</button>)}</div><div className="sheetSliders"><Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Color" value={saturation} setValue={setSaturation} min={0} max={180}/></div></>}
+          {toolSheet === 'audio' && <><label className="sheetButton">{replacementAudioFile ? 'Replace audio' : 'Add audio'}<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label><select value={voicePreset} onChange={event => void chooseVoicePreset(event.target.value as VoicePreset)}>{voicePresets.map(value => <option key={value}>{value}</option>)}</select><Slider label="Vocal loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/></>}
+          {toolSheet === 'background' && <><button className="sheetButton" onClick={autoDetectBackground}>Auto detect</button><button className="sheetButton" onClick={() => setPickingColor(true)}>Pick background color</button><label className="sheetButton">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label></>}
+        </div>
+      </section>}
       <aside className="panel">
         <nav className="tabs"><button className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}><Scissors/>Edit</button><button className={tab === 'filter' ? 'active' : ''} onClick={() => setTab('filter')}><SlidersHorizontal/>Adjust</button><button className={tab === 'voice' ? 'active' : ''} onClick={() => setTab('voice')}><Mic2/>Voice</button><button className={tab === 'background' ? 'active' : ''} onClick={() => setTab('background')}><ImageIcon/>BG</button></nav>
         <div className="controls">
