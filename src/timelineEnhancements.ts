@@ -34,8 +34,8 @@ export const installTimelineEnhancements = () => {
   }
 
   const installHistoryButtons = () => {
-    const timeline = document.querySelector<HTMLElement>('.studioTimeline')
-    if (!timeline || timeline.querySelector('.timelineHistory')) return
+    const header = document.querySelector<HTMLElement>('.timelineHeader')
+    if (!header || header.querySelector('.timelineHistory')) return
     const host = document.createElement('div')
     host.className = 'timelineHistory'
     host.innerHTML = `
@@ -43,7 +43,9 @@ export const installTimelineEnhancements = () => {
       <button type="button" class="timelineRedo" aria-label="Redo" title="Redo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 1 0 0 12"/></svg></button>`
     host.querySelector<HTMLButtonElement>('.timelineUndo')?.addEventListener('click', () => document.querySelectorAll<HTMLButtonElement>('.historyActions button')[0]?.click())
     host.querySelector<HTMLButtonElement>('.timelineRedo')?.addEventListener('click', () => document.querySelectorAll<HTMLButtonElement>('.historyActions button')[1]?.click())
-    timeline.appendChild(host)
+    const zoom = header.querySelector('label')
+    if (zoom) header.insertBefore(host, zoom)
+    else header.appendChild(host)
   }
 
   const syncHistoryDisabledState = () => {
