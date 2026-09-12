@@ -6,7 +6,7 @@ import { Check, Download, Image as ImageIcon, Magnet, Mic2, Pause, Play, Redo2, 
 type Tab = 'edit' | 'filter' | 'voice' | 'background'
 type VoicePreset = 'Raw Clean' | 'Studio' | 'Professional Vocal' | 'Clear Vocal' | 'Warm Vocal' | 'Unplugged' | 'iPhone Balance' | 'Dolby Style' | 'Soft Reverb' | 'Studio Reverb' | 'Hall Reverb' | 'Echo'
 type FilterPreset = 'None' | 'Vivid' | 'Warm' | 'Cool' | 'Mono' | 'Cinema Glow' | 'Mystery Blur'
-type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | 'Custom'
+type AspectRatio = 'Original' | '9:16' | '16:9' | '1:1' | '4:5' | 'Custom'
 type Segment = { id: number; start: number; end: number }
 type Crop = { x: number; y: number; width: number; height: number }
 type EditSnapshot = { segments: Segment[]; crop: Crop }
@@ -52,6 +52,11 @@ export default function App() {
   const cropDragRef = useRef<{ mode: 'move' | 'se' | 'sw' | 'ne' | 'nw'; startX: number; startY: number; crop: Crop } | null>(null)
   const audioDragRef = useRef<{ startX: number; startTime: number } | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
+  const seekFrameRef = useRef<number | null>(null)
+  const pendingSeekRef = useRef<number | null>(null)
+  const scrubEndRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clipPointerRef = useRef<{ index: number; x: number; y: number; pointerId: number } | null>(null)
 
   const [videoUrl, setVideoUrl] = useState('')
   const [sourceFile, setSourceFile] = useState<File | null>(null)
@@ -65,6 +70,9 @@ export default function App() {
   const [originalAudioVolume, setOriginalAudioVolume] = useState(100)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const [draggedSegment, setDraggedSegment] = useState<number | null>(null)
+  const [clipSelected, setClipSelected] = useState(false)
+  const [dragUnlocked, setDragUnlocked] = useState(false)
+  const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 })
   const [fileName, setFileName] = useState('')
   const [tab, setTab] = useState<Tab>('edit')
   const [playing, setPlaying] = useState(false)
@@ -115,6 +123,7 @@ export default function App() {
     if (value === '9:16') return 9 / 16
     if (value === '16:9') return 16 / 9
     if (value === '1:1') return 1
+    if (value === '4:5') return 4 / 5
     if (value === 'Custom') return Math.max(1, customWidth) / Math.max(1, customHeight)
     return sourceRatio
   }
@@ -132,7 +141,12 @@ export default function App() {
     setCrop({ x: (1 - width) / 2, y: (1 - height) / 2, width, height })
   }
 
-  useEffect(() => () => { void audioContextRef.current?.close() }, [])
+  useEffect(() => () => {
+    void audioContextRef.current?.close()
+    if (seekFrameRef.current !== null) cancelAnimationFrame(seekFrameRef.current)
+    if (scrubEndRef.current) clearTimeout(scrubEndRef.current)
+    if (longPressRef.current) clearTimeout(longPressRef.current)
+  }, [])
 
   useEffect(() => {
     const video = videoRef.current
@@ -167,7 +181,7 @@ export default function App() {
     const file = event.target.files?.[0]
     if (!file) return
     if (videoUrl) URL.revokeObjectURL(videoUrl)
-    setVideoUrl(URL.createObjectURL(file)); setSourceFile(file); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setAspect('Original'); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setCropApplied(true); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage(''); setExportedFile(null)
+    setVideoUrl(URL.createObjectURL(file)); setSourceFile(file); setFileName(file.name); setDuration(0); setTrimStart(0); setTrimEnd(0); setSegments([]); setSelectedSegment(0); setClipSelected(false); setSourceSize({ width: 0, height: 0 }); setAspect('Original'); setCrop({ x: 0, y: 0, width: 1, height: 1 }); setCropApplied(true); setUndoStack([]); setRedoStack([]); setCurrentTime(0); setPlaying(false); setExportMessage(''); setExportedFile(null)
   }
 
   const importBackground = (event: ChangeEvent<HTMLInputElement>) => {
@@ -212,7 +226,10 @@ export default function App() {
   const scrubTimelineFromScroll = (element: HTMLDivElement) => {
     const range = element.scrollWidth - element.clientWidth
     if (range <= 0 || !editedDuration) return
+    replacementAudioRef.current?.pause()
     seekEditedTimeline(element.scrollLeft / range * editedDuration)
+    if (scrubEndRef.current) clearTimeout(scrubEndRef.current)
+    scrubEndRef.current = setTimeout(() => syncReplacementAudio(pendingSeekRef.current ?? currentTime, playing), 140)
   }
 
   const editedDuration = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) / speed
@@ -231,13 +248,44 @@ export default function App() {
     setSegments(next); setSelectedSegment(targetIndex); setTrimStart(moved.start); setTrimEnd(moved.end); setDraggedSegment(null)
   }
 
+  const cancelLongPress = () => {
+    if (longPressRef.current) clearTimeout(longPressRef.current)
+    longPressRef.current = null
+  }
+
+  const startClipHold = (event: ReactPointerEvent<HTMLButtonElement>, index: number) => {
+    cancelLongPress()
+    clipPointerRef.current = { index, x: event.clientX, y: event.clientY, pointerId: event.pointerId }
+    longPressRef.current = setTimeout(() => {
+      setDraggedSegment(index); setDragUnlocked(true)
+      event.currentTarget.setPointerCapture(event.pointerId)
+      navigator.vibrate?.(25)
+    }, 400)
+  }
+
+  const moveHeldClip = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const pointer = clipPointerRef.current
+    if (!pointer) return
+    if (!dragUnlocked && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 8) cancelLongPress()
+    if (!dragUnlocked) return
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-clip-index]')
+    if (target) {
+      const targetIndex = Number(target.dataset.clipIndex)
+      if (Number.isInteger(targetIndex) && targetIndex !== draggedSegment) reorderSegment(targetIndex)
+    }
+  }
+
+  const endClipHold = () => {
+    cancelLongPress(); clipPointerRef.current = null; setDragUnlocked(false); setDraggedSegment(null)
+  }
+
   const syncReplacementAudio = (sourceTime: number, play: boolean) => {
     const audio = replacementAudioRef.current
     if (!audio || !replacementAudioUrl) return
     const wanted = getEditedTimelineTime(sourceTime) - replacementAudioStart + replacementAudioOffset
     const usableEnd = replacementAudioDuration || audio.duration || 0
     if (wanted < replacementAudioOffset || wanted >= usableEnd) { audio.pause(); return }
-    if (Math.abs(audio.currentTime - wanted) > .12) audio.currentTime = wanted
+    if (Math.abs(audio.currentTime - wanted) > .35) audio.currentTime = wanted
     if (play && audio.paused) void audio.play().catch(() => undefined)
     if (!play) audio.pause()
   }
@@ -300,8 +348,16 @@ export default function App() {
   }
 
   const seek = (value: number) => {
-    if (videoRef.current) videoRef.current.currentTime = value
-    setCurrentTime(value)
+    pendingSeekRef.current = value
+    if (seekFrameRef.current !== null) return
+    seekFrameRef.current = requestAnimationFrame(() => {
+      const next = pendingSeekRef.current
+      const video = videoRef.current
+      seekFrameRef.current = null
+      if (next === null || !video) return
+      if (Math.abs(video.currentTime - next) > .025) video.currentTime = next
+      setCurrentTime(next)
+    })
   }
 
   const updateTime = () => {
@@ -415,7 +471,7 @@ export default function App() {
   const getExportSize = () => {
     const video = videoRef.current
     const sourceRatio = (video?.videoWidth || 16) / (video?.videoHeight || 9)
-    const ratio = aspect === '9:16' ? 9 / 16 : aspect === '16:9' ? 16 / 9 : aspect === '1:1' ? 1 : aspect === 'Custom' ? customWidth / customHeight : sourceRatio
+    const ratio = aspect === '9:16' ? 9 / 16 : aspect === '16:9' ? 16 / 9 : aspect === '1:1' ? 1 : aspect === '4:5' ? 4 / 5 : aspect === 'Custom' ? customWidth / customHeight : sourceRatio
     if (ratio >= 1) return { width: Math.round(exportQuality * ratio / 2) * 2, height: exportQuality }
     return { width: exportQuality, height: Math.round(exportQuality / ratio / 2) * 2 }
   }
@@ -558,9 +614,9 @@ export default function App() {
       <div className="previewPanel">
         {!videoUrl ? <label className="emptyState"><Upload size={40}/><b>Import a video</b><span>Your media stays on this device</span><input type="file" accept="video/*" onChange={importVideo}/></label> : <>
           <div className="stage">
-            <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const length = event.currentTarget.duration; setDuration(length); setTrimEnd(length); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => { setPlaying(false); replacementAudioRef.current?.pause() }} onEnded={() => { setPlaying(false); replacementAudioRef.current?.pause() }}/>
+            <video className="sourceVideo" ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={event => { const video = event.currentTarget; const length = video.duration; setDuration(length); setTrimEnd(length); setSourceSize({ width: video.videoWidth, height: video.videoHeight }); setSegments([{ id: 1, start: 0, end: length }]) }} onTimeUpdate={updateTime} onPlay={() => setPlaying(true)} onPause={() => { setPlaying(false); replacementAudioRef.current?.pause() }} onEnded={() => { setPlaying(false); replacementAudioRef.current?.pause() }}/>
             {replacementAudioUrl && <audio ref={replacementAudioRef} src={replacementAudioUrl} preload="metadata" onLoadedMetadata={event => setReplacementAudioDuration(event.currentTarget.duration)}/>} 
-            <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={pickBackgroundColor}/>{tab === 'edit' && !cropApplied && <><div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div><button className="applyCrop" onClick={() => setCropApplied(true)}><Check size={20}/>Apply crop</button></>}</div>
+            <div className="canvasWrap" onPointerMove={moveCrop} onPointerUp={() => { cropDragRef.current = null }} onPointerCancel={() => { cropDragRef.current = null }}><canvas className={pickingColor ? 'previewCanvas picking' : 'previewCanvas'} ref={previewCanvasRef} onPointerDown={event => { if (cropApplied && !pickingColor) setClipSelected(false); pickBackgroundColor(event) }}/>{tab === 'edit' && !cropApplied && <><div className="cropFrame" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} onPointerDown={event => startCropDrag(event, 'move')}><i className="gridV one"/><i className="gridV two"/><i className="gridH one"/><i className="gridH two"/>{(['nw', 'ne', 'sw', 'se'] as const).map(handle => <button key={handle} className={`cropHandle ${handle}`} aria-label={`Resize crop ${handle}`} onPointerDown={event => { event.stopPropagation(); startCropDrag(event, handle) }}/>)}</div><button className="applyCrop" onClick={() => setCropApplied(true)}><Check size={20}/>Apply crop</button></>}</div>
           </div>
           <div className="transport"><button disabled={exporting} onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={20}/> : <Play size={20}/>}</button><input className="scrubber" disabled={exporting} aria-label="Video position" type="range" min={0} max={duration || 1} step="0.01" value={currentTime} onChange={event => seek(Number(event.target.value))}/><span className="timecode">{formatTime(getEditedTimelineTime(currentTime))} / {formatTime(editedDuration)}</span></div>
           <section className="studioTimeline">
@@ -568,17 +624,19 @@ export default function App() {
             <div className="timelineScroller" ref={timelineRef} onScroll={event => scrubTimelineFromScroll(event.currentTarget)}>
               <div className="timelineCanvas" style={{ width: `${Math.max(100, editedDuration * 7 * timelineZoom)}%` }}>
                 <div className="timeRuler">{Array.from({ length: Math.max(2, Math.ceil(editedDuration / 5) + 1) }, (_, index) => <span key={index} style={{ left: `${Math.min(100, index * 5 / Math.max(.1, editedDuration) * 100)}%` }}>{formatTime(index * 5)}</span>)}</div>
-                <div className={`trackRow ${tab === 'edit' ? 'activeTrack' : ''}`} onClick={() => setTab('edit')}><div className="trackLabel">Video</div><div className="trackLane videoLane">{segments.map((segment, index) => <button draggable key={segment.id} className={`timelineClip videoClip ${selectedSegment === index ? 'selected' : ''}`} style={{ width: `${(segment.end - segment.start) / speed / Math.max(.1, editedDuration) * 100}%` }} onDragStart={() => setDraggedSegment(index)} onDragOver={event => event.preventDefault()} onDrop={() => reorderSegment(index)} onClick={() => { setTab('edit'); selectSegment(index) }}><span>Clip {index + 1}</span><small>{formatTime((segment.end - segment.start) / speed)}</small></button>)}</div></div>
+                <div className={`trackRow ${tab === 'edit' ? 'activeTrack' : ''}`} onClick={() => setTab('edit')}><div className="trackLabel">Video</div><div className="trackLane videoLane" onPointerDown={event => { if (event.target === event.currentTarget) setClipSelected(false) }}>{segments.map((segment, index) => <button key={segment.id} data-clip-index={index} className={`timelineClip videoClip ${clipSelected && selectedSegment === index ? 'selected' : ''} ${dragUnlocked && draggedSegment === index ? 'dragUnlocked' : ''}`} style={{ width: `${(segment.end - segment.start) / speed / Math.max(.1, editedDuration) * 100}%` }} onPointerDown={event => startClipHold(event, index)} onPointerMove={moveHeldClip} onPointerUp={endClipHold} onPointerCancel={endClipHold} onClick={event => { event.stopPropagation(); setTab('edit'); setClipSelected(true); selectSegment(index) }}><span>Clip {index + 1}</span><small>{formatTime((segment.end - segment.start) / speed)}</small></button>)}</div></div>
                 <div className={`trackRow ${tab === 'voice' ? 'activeTrack' : ''}`} onClick={() => setTab('voice')}><div className="trackLabel">Audio</div><div className="trackLane audioLane">{replacementAudioFile ? <button className="timelineClip audioClip" style={{ left: `${replacementAudioStart / Math.max(.1, editedDuration) * 100}%`, width: `${Math.max(3, Math.min(replacementAudioDuration - replacementAudioOffset, Math.max(0, editedDuration - replacementAudioStart)) / Math.max(.1, editedDuration) * 100)}%` }} onPointerDown={event => { audioDragRef.current = { startX: event.clientX, startTime: replacementAudioStart }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={moveAudioClip} onPointerUp={() => { audioDragRef.current = null }}><Volume2 size={14}/><span>{replacementAudioName}</span></button> : <label className="addTrackButton">+ Add audio<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>}</div></div>
                 <div className={`trackRow ${tab === 'background' ? 'activeTrack' : ''}`} onClick={() => setTab('background')}><div className="trackLabel">Overlay</div><div className="trackLane overlayLane"><button className="addTrackButton" disabled>+ Overlay layer</button></div></div>
               </div>
             </div>
             <div className="fixedPlayhead" aria-hidden="true"><i/></div>
             <div className="clipToolbar">
-              {tab === 'edit' ? <>
+              {clipSelected && tab === 'edit' ? <>
+                <button onClick={() => setCropApplied(false)}>Crop</button>
                 <button disabled={!segments.length} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - .1)), trimEnd)}>Set In</button>
                 <button disabled={!segments.length} onClick={splitAtPlayhead}><Scissors size={17}/><span>Split</span></button>
                 <button disabled={!segments.length} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + .1)))}>Set Out</button>
+                <button onClick={() => setTab('edit')}>Speed</button>
                 <button className="danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={17}/><span>Delete</span></button>
                 <button onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}><Volume2 size={17}/><span>{originalAudioVolume === 0 ? 'Unmute' : 'Mute'}</span></button>
                 <label><Volume2 size={17}/><span>Add Audio</span><input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>
@@ -587,7 +645,7 @@ export default function App() {
                 <button disabled={!replacementAudioFile} onClick={() => setReplacementAudioStart(getEditedTimelineTime(currentTime))}>Place Here</button>
                 <button disabled={!replacementAudioFile} onClick={() => setReplacementAudioVolume(value => value === 0 ? 100 : 0)}><Volume2 size={17}/><span>{replacementAudioVolume === 0 ? 'Unmute' : 'Mute'}</span></button>
                 <button className="danger" disabled={!replacementAudioFile} onClick={() => { replacementAudioRef.current?.pause(); if (replacementAudioUrl) URL.revokeObjectURL(replacementAudioUrl); setReplacementAudioFile(null); setReplacementAudioUrl(''); setReplacementAudioName('') }}><Trash2 size={17}/><span>Delete Audio</span></button>
-              </> : <><button onClick={() => setTab('filter')}>Adjust</button><button onClick={() => setTab('background')}>Background</button></>}
+              </> : <><button onClick={() => { setClipSelected(false); setTab('edit') }}>Edit</button><button onClick={() => { setClipSelected(false); setTab('filter') }}>Adjust</button><button onClick={() => { setClipSelected(false); setTab('voice') }}>Audio</button><button onClick={() => { setClipSelected(false); setTab('background') }}>Background</button></>}
             </div>
           </section>
           <div className="fileRow"><span className="filename">{fileName}</span><label>Replace<input type="file" accept="video/*" onChange={importVideo}/></label></div>
@@ -599,7 +657,7 @@ export default function App() {
         <div className="controls">
           <div className="historyActions"><button className="secondary" disabled={!undoStack.length} onClick={undo}><Undo2 size={16}/>Undo</button><button className="secondary" disabled={!redoStack.length} onClick={redo}><Redo2 size={16}/>Redo</button></div>
           {tab === 'edit' && cropApplied && <button className="secondary" onClick={() => setCropApplied(false)}>Edit crop area</button>}
-          {tab === 'edit' && <><section className="card"><h2>Selected video clip</h2><p>Select a clip below the monitor. Split, delete or drag clips to change their order.</p></section><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => changeAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
+          {tab === 'edit' && <><section className="card"><h2>Selected video clip</h2><p>{sourceSize.width ? `${sourceSize.width} × ${sourceSize.height}. ` : ''}Tap a clip for its tools. Hold it for 400ms before dragging to reorder.</p></section><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => changeAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>4:5</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
           {tab === 'filter' && <><section className="card"><h2>Visual adjustments</h2><p>Mystery Blur keeps you visibly singing while gently softening facial detail, so attention stays on the voice.</p></section><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div>{filterPreset === 'Mystery Blur' && <Slider label="Mystery blur" value={blurStrength} setValue={setBlurStrength} min={1} max={14} suffix=" px"/>}<Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlurStrength(5); setFilterPreset('None') }}>Reset adjustments</button></>}
           {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Audio tracks</h2><p>Mute the camera audio or mix a separate song, vocal or mastered track at an exact timeline position.</p></section><Slider label="Original video audio" value={originalAudioVolume} setValue={setOriginalAudioVolume} min={0} max={100} suffix="%"/><button className={originalAudioVolume === 0 ? 'secondary activeTool' : 'secondary'} onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}>{originalAudioVolume === 0 ? 'Unmute original audio' : 'Mute original audio'}</button><label className="secondary uploadBg"><Volume2 size={16}/>Import replacement audio<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>{replacementAudioFile && <section className="card audioTrackCard"><h2>{replacementAudioName}</h2><p>{formatTime(replacementAudioDuration)} audio placed at {formatTime(replacementAudioStart)}</p><button className="secondary" onClick={() => setReplacementAudioStart(getEditedTimelineTime(currentTime))}>Place at playhead</button><Slider label="Timeline start" value={replacementAudioStart} setValue={setReplacementAudioStart} min={0} max={Math.max(.1, segments.reduce((sum, item) => sum + item.end - item.start, 0) / speed)} step={.05} suffix=" s"/><Slider label="Start audio from" value={replacementAudioOffset} setValue={setReplacementAudioOffset} min={0} max={Math.max(.1, replacementAudioDuration)} step={.05} suffix=" s"/><Slider label="Imported audio volume" value={replacementAudioVolume} setValue={setReplacementAudioVolume} min={0} max={150} suffix="%"/><button className="secondary danger" onClick={() => { replacementAudioRef.current?.pause(); URL.revokeObjectURL(replacementAudioUrl); setReplacementAudioFile(null); setReplacementAudioUrl(''); setReplacementAudioName('') }}>Remove imported audio</button></section>}<section className="card"><h2><Mic2 size={17}/>Voice Studio</h2><p>Natural singing presets use EQ, compression and local reverb on the original video audio.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
           {tab === 'background' && <><section className="card"><h2>Background replacement</h2><p>Changes appear instantly in the preview. Auto Detect samples the corners; Pick Color lets you tap the background.</p></section><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={autoDetectBackground}>Auto Detect</button><button className={pickingColor ? 'secondary activeTool' : 'secondary'} disabled={!videoUrl} onClick={() => setPickingColor(value => !value)}>Pick Color</button></div><label className="toggleRow"><input type="checkbox" checked={chromaEnabled} onChange={event => setChromaEnabled(event.target.checked)}/><span>Enable chroma key</span></label>{chromaEnabled && <><label className="toggleRow"><input type="checkbox" checked={protectSkin} onChange={event => setProtectSkin(event.target.checked)}/><span>Protect face and skin</span></label><label className="field">Remove color<input type="color" value={chromaColor} onChange={event => setChromaColor(event.target.value)}/></label><Slider label="Color tolerance" value={chromaThreshold} setValue={setChromaThreshold} min={10} max={140}/></>}<label className="field">New background color<input type="color" value={bgColor} onChange={event => setBgColor(event.target.value)}/></label><label className="secondary uploadBg">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label>{bgImage && <button className="secondary" onClick={() => { URL.revokeObjectURL(bgImage); setBgImage('') }}>Remove image</button>}</>}
