@@ -59,6 +59,7 @@ export default function App() {
   const scrubEndRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clipPointerRef = useRef<{ index: number; x: number; y: number; pointerId: number } | null>(null)
+  const timelinePlaybackSyncRef = useRef(false)
 
   const [videoUrl, setVideoUrl] = useState('')
   const [sourceFile, setSourceFile] = useState<File | null>(null)
@@ -228,6 +229,7 @@ export default function App() {
   }
 
   const scrubTimelineFromScroll = (element: HTMLDivElement) => {
+    if (timelinePlaybackSyncRef.current) return
     const range = element.scrollWidth - element.clientWidth
     if (range <= 0 || !editedDuration) return
     replacementAudioRef.current?.pause()
@@ -378,6 +380,14 @@ export default function App() {
     }
     setCurrentTime(video.currentTime)
     syncReplacementAudio(video.currentTime, !video.paused)
+    if (!video.paused && timelineRef.current && editedDuration > 0) {
+      const timeline = timelineRef.current
+      const range = timeline.scrollWidth - timeline.clientWidth
+      const editedTime = getEditedTimelineTime(video.currentTime)
+      timelinePlaybackSyncRef.current = true
+      timeline.scrollLeft = Math.max(0, Math.min(range, editedTime / editedDuration * range))
+      requestAnimationFrame(() => { timelinePlaybackSyncRef.current = false })
+    }
   }
 
   const presetFilter = useMemo(() => {
@@ -420,7 +430,17 @@ export default function App() {
     rememberEdit()
     const next = segments.filter((_, index) => index !== selectedSegment)
     const index = Math.min(selectedSegment, next.length - 1)
+    const editedStart = next.slice(0, index).reduce((sum, item) => sum + (item.end - item.start) / speed, 0)
     setSegments(next); selectSegmentFrom(next, index)
+    requestAnimationFrame(() => {
+      const timeline = timelineRef.current
+      if (!timeline) return
+      const range = timeline.scrollWidth - timeline.clientWidth
+      const nextDuration = next.reduce((sum, item) => sum + (item.end - item.start) / speed, 0)
+      timelinePlaybackSyncRef.current = true
+      timeline.scrollLeft = nextDuration ? editedStart / nextDuration * range : 0
+      requestAnimationFrame(() => { timelinePlaybackSyncRef.current = false })
+    })
   }
 
   const selectSegmentFrom = (items: Segment[], index: number) => {
@@ -629,7 +649,7 @@ export default function App() {
           <section className="studioTimeline">
             <div className="timelineHeader"><b>Timeline</b><label>Zoom <input type="range" min="1" max="4" step=".25" value={timelineZoom} onChange={event => setTimelineZoom(Number(event.target.value))}/></label></div>
             <div className="timelineScroller" ref={timelineRef} onScroll={event => scrubTimelineFromScroll(event.currentTarget)}>
-              <div className="timelineCanvas" style={{ width: `${Math.max(100, editedDuration * 7 * timelineZoom)}%` }}>
+              <div className="timelineCanvas" style={{ width: `${Math.max(320, editedDuration * 82 * timelineZoom)}px` }}>
                 <div className="timeRuler">{Array.from({ length: Math.max(2, Math.ceil(editedDuration / 5) + 1) }, (_, index) => <span key={index} style={{ left: `${Math.min(100, index * 5 / Math.max(.1, editedDuration) * 100)}%` }}>{formatTime(index * 5)}</span>)}</div>
                 <div className={`trackRow ${tab === 'edit' ? 'activeTrack' : ''}`} onClick={() => setTab('edit')}><div className="trackLabel">Video</div><div className="trackLane videoLane" onPointerDown={event => { if (event.target === event.currentTarget) setClipSelected(false) }}>{segments.map((segment, index) => <button key={segment.id} data-clip-index={index} className={`timelineClip videoClip ${clipSelected && selectedSegment === index ? 'selected' : ''} ${dragUnlocked && draggedSegment === index ? 'dragUnlocked' : ''}`} style={{ width: `${(segment.end - segment.start) / speed / Math.max(.1, editedDuration) * 100}%` }} onPointerDown={event => startClipHold(event, index)} onPointerMove={moveHeldClip} onPointerUp={endClipHold} onPointerCancel={endClipHold} onClick={event => { event.stopPropagation(); setTab('edit'); setClipSelected(true); selectSegment(index) }}><span>Clip {index + 1}</span><small>{formatTime((segment.end - segment.start) / speed)}</small></button>)}</div></div>
                 <div className={`trackRow ${tab === 'voice' ? 'activeTrack' : ''}`} onClick={() => setTab('voice')}><div className="trackLabel">Audio</div><div className="trackLane audioLane">{replacementAudioFile ? <button className="timelineClip audioClip" style={{ left: `${replacementAudioStart / Math.max(.1, editedDuration) * 100}%`, width: `${Math.max(3, Math.min(replacementAudioDuration - replacementAudioOffset, Math.max(0, editedDuration - replacementAudioStart)) / Math.max(.1, editedDuration) * 100)}%` }} onPointerDown={event => { audioDragRef.current = { startX: event.clientX, startTime: replacementAudioStart }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={moveAudioClip} onPointerUp={() => { audioDragRef.current = null }}><Volume2 size={14}/><span>{replacementAudioName}</span></button> : <label className="addTrackButton">+ Add audio<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>}</div></div>
