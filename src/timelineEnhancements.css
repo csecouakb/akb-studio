@@ -1,39 +1,34 @@
-/* Touch-first timeline refinements without pinning track labels. */
+/* Touch-first timeline refinements. */
 .transport .scrubber{display:none!important}
 .transport{grid-template-columns:auto 1fr!important}
 .transport .timecode{justify-self:end}
 
-/* The whole timeline moves together: ruler, Video, Audio and Overlay. */
 .timelineScroller{position:relative;overflow-x:auto!important;overflow-y:hidden!important;touch-action:pan-x pinch-zoom!important;overscroll-behavior-x:contain}
-.timelineClip,.videoClip,.audioClip{touch-action:pan-x!important;-webkit-user-drag:none;user-select:none;-webkit-user-select:none}
-.videoClip.dragUnlocked{touch-action:none!important;cursor:grabbing!important}
-.timelineScroller.dragLocked{overflow-x:hidden!important;touch-action:none!important}
+.timelineClip,.videoClip,.audioClip{-webkit-user-drag:none;user-select:none;-webkit-user-select:none}
 
-/* Crop is tied to the actual rendered canvas only, never the black stage around it. */
+/* The media lane begins exactly under the fixed playhead at 0:00.
+   The 74px track label is part of the moving timeline, so it must be removed from the left centering gutter. */
+.timelineCanvas{box-sizing:content-box!important;padding-left:calc(50% - 74px)!important;padding-right:50%!important}
+.timeRuler{left:50%!important;right:50%!important}
+
+/* Crop stays on the actual rendered canvas, not the black stage around it. */
 .stage{display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important}
-.canvasWrap{position:relative!important;display:inline-block!important;width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important;flex:0 0 auto!important;line-height:0!important;margin:auto!important;overflow:visible!important}
+.canvasWrap{position:relative!important;display:inline-block!important;width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important;flex:0 0 auto!important;line-height:0!important;margin:auto!important}
 .previewCanvas{display:block!important;width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important}
 .cropFrame{position:absolute!important;box-sizing:border-box!important;margin:0!important}
 
-/* Selection is explicit. */
 .trackRow.activeTrack .videoClip.selected{outline:2px solid #fff!important;outline-offset:-2px}
 .trackRow:not(.activeTrack) .videoClip.selected{outline:none!important}
 .trackRow.activeTrack .audioClip{outline:2px solid #fff;outline-offset:-2px}
-
-/* Make every cut easy to see. */
 .videoClip+.videoClip{border-left:3px solid rgba(255,255,255,.95)!important}
-.videoClip.justSplit{box-shadow:inset 0 0 0 2px #fff,0 0 0 2px rgba(126,231,135,.7)!important;filter:brightness(1.18)}
 
-/* Undo / redo are part of the Timeline header, so they cannot disappear behind the editor. */
+/* Undo / redo are always visible beside Zoom. */
 .timelineHeader{display:flex!important;align-items:center!important;gap:10px!important}
 .timelineHeader>b{margin-right:auto!important}
-.timelineHistory{position:static!important;z-index:auto!important;display:flex!important;gap:6px!important;pointer-events:auto!important;flex:0 0 auto!important}
-.timelineHistory button{width:34px;height:34px;border:1px solid #3a3a42;border-radius:9px;background:#202026;color:#fff;display:grid;place-items:center;padding:0;cursor:pointer;box-shadow:none}
+.timelineHistory{display:flex!important;gap:6px!important;flex:0 0 auto!important}
+.timelineHistory button{width:34px;height:34px;border:1px solid #3a3a42;border-radius:9px;background:#202026;color:#fff;font-size:22px;line-height:1;display:grid;place-items:center;padding:0;cursor:pointer}
 .timelineHistory button:disabled{opacity:.35;cursor:not-allowed!important}
-.timelineHistory svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.timelineHistory button:active:not(:disabled){transform:scale(.96)}
 
-/* Desktop should use the full editor, including the side controls. */
 @media(min-width:901px){
   .workspace{display:grid!important;grid-template-columns:minmax(0,1fr) 330px!important;gap:14px!important;padding:14px!important;height:calc(100dvh - 72px)!important}
   .previewPanel{height:100%!important;min-height:0!important;display:grid!important;grid-template-rows:minmax(260px,1fr) 58px minmax(220px,38vh) auto!important}
@@ -41,12 +36,9 @@
   .controls{overflow-y:auto!important;padding:14px!important}
   .stage{min-height:0!important;height:auto!important}
   .studioTimeline{min-height:220px!important}
-  .toolSheet{left:calc(50% - 165px)!important;right:calc(330px + 18px)!important;max-width:none!important}
 }
 
 @media(max-width:900px){
-  .canvasWrap{max-width:100%!important;max-height:100%!important}
-  .previewCanvas{max-width:100%!important;max-height:100%!important}
   .timelineHeader{gap:6px!important}
   .timelineHistory button{width:32px;height:32px}
 }
