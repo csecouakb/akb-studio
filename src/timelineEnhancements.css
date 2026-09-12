@@ -19,7 +19,19 @@
 .trackRow:not(.activeTrack) .videoClip.selected{outline:none!important}
 .trackRow.activeTrack .audioClip{outline:2px solid #fff;outline-offset:-2px}
 
+/* Make every cut visible, and briefly flash the newly-created right half. */
+.videoClip+.videoClip{border-left:3px solid rgba(255,255,255,.92)!important}
+.videoClip.justSplit{box-shadow:inset 0 0 0 2px #fff,0 0 0 2px rgba(126,231,135,.65)!important;filter:brightness(1.15)}
+
+/* Undo / redo must stay visible even though the old side panel is hidden. */
+.timelineHistory{position:absolute;top:6px;right:10px;z-index:20;display:flex;gap:6px;pointer-events:auto}
+.timelineHistory button{width:34px;height:34px;border:1px solid #3a3a42;border-radius:9px;background:#202026;color:#fff;display:grid;place-items:center;padding:0;cursor:pointer;box-shadow:0 2px 8px #0007}
+.timelineHistory svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.timelineHistory button:active{transform:scale(.96)}
+
 @media(max-width:900px){
   .canvasWrap{max-width:100%!important;max-height:100%!important}
   .previewCanvas{max-width:100%!important;max-height:100%!important}
+  .timelineHistory{top:3px;right:6px}
+  .timelineHistory button{width:32px;height:32px}
 }
