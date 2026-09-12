@@ -24,9 +24,11 @@
 .videoClip+.videoClip{border-left:3px solid rgba(255,255,255,.95)!important}
 .videoClip.justSplit{box-shadow:inset 0 0 0 2px #fff,0 0 0 2px rgba(126,231,135,.7)!important;filter:brightness(1.18)}
 
-/* Undo / redo always visible. */
-.timelineHistory{position:absolute;top:6px;right:10px;z-index:40;display:flex;gap:6px;pointer-events:auto}
-.timelineHistory button{width:34px;height:34px;border:1px solid #3a3a42;border-radius:9px;background:#202026;color:#fff;display:grid;place-items:center;padding:0;cursor:pointer;box-shadow:0 2px 8px #0007}
+/* Undo / redo are part of the Timeline header, so they cannot disappear behind the editor. */
+.timelineHeader{display:flex!important;align-items:center!important;gap:10px!important}
+.timelineHeader>b{margin-right:auto!important}
+.timelineHistory{position:static!important;z-index:auto!important;display:flex!important;gap:6px!important;pointer-events:auto!important;flex:0 0 auto!important}
+.timelineHistory button{width:34px;height:34px;border:1px solid #3a3a42;border-radius:9px;background:#202026;color:#fff;display:grid;place-items:center;padding:0;cursor:pointer;box-shadow:none}
 .timelineHistory button:disabled{opacity:.35;cursor:not-allowed!important}
 .timelineHistory svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .timelineHistory button:active:not(:disabled){transform:scale(.96)}
@@ -45,6 +47,6 @@
 @media(max-width:900px){
   .canvasWrap{max-width:100%!important;max-height:100%!important}
   .previewCanvas{max-width:100%!important;max-height:100%!important}
-  .timelineHistory{top:3px;right:6px}
+  .timelineHeader{gap:6px!important}
   .timelineHistory button{width:32px;height:32px}
 }
