@@ -1,31 +1,25 @@
-/* Timeline interaction refinements requested for touch-first editing. */
+/* Touch-first timeline refinements without pinning track labels. */
 .transport .scrubber{display:none!important}
 .transport{grid-template-columns:auto 1fr!important}
 .transport .timecode{justify-self:end}
 
-/* Labels stay fixed while only the media lanes scroll. */
-.timelineScroller{position:relative;overflow-x:auto!important;overflow-y:hidden!important;touch-action:pan-x pinch-zoom!important}
-.timelineCanvas{min-width:100%!important;box-sizing:border-box!important;padding-left:0!important;padding-right:calc(100% - 74px)!important}
-.trackRow{position:relative}
-.trackLabel{position:sticky;left:0;z-index:12;background:#111114;box-shadow:1px 0 0 #292930}
-.trackRow.activeTrack .trackLabel{background:#25252b}
-.timeRuler{left:74px!important;right:calc(100% - 74px)!important}
-
-/* Playhead starts exactly after the fixed label column, never over Video/Audio/Overlay. */
-.fixedPlayhead{left:74px!important;z-index:14!important}
-
-/* A normal swipe on a clip scrolls the timeline. Reordering still requires the existing long press. */
+/* The whole timeline moves together: ruler, Video, Audio and Overlay. */
+.timelineScroller{position:relative;overflow-x:auto!important;overflow-y:hidden!important;touch-action:pan-x pinch-zoom!important;overscroll-behavior-x:contain}
 .timelineClip,.videoClip,.audioClip{touch-action:pan-x!important;-webkit-user-drag:none;user-select:none;-webkit-user-select:none}
-.videoClip:not(.dragUnlocked){cursor:pointer!important}
 .videoClip.dragUnlocked{touch-action:none!important;cursor:grabbing!important}
+.timelineScroller.dragLocked{overflow-x:hidden!important;touch-action:none!important}
 
-/* Track selection is visually exclusive. */
+/* Keep crop interaction limited to the rendered video/canvas area, not the black monitor area. */
+.canvasWrap{width:max-content!important;height:max-content!important;max-width:100%!important;max-height:100%!important;flex:0 0 auto!important;line-height:0!important;align-self:center;justify-self:center}
+.previewCanvas{display:block!important;max-width:100%!important;max-height:100%!important;width:auto!important;height:auto!important}
+.cropFrame{box-sizing:border-box!important}
+
+/* Selection is explicit: video selection only while Video is active, audio while Audio is active. */
 .trackRow.activeTrack .videoClip.selected{outline:2px solid #fff!important;outline-offset:-2px}
 .trackRow:not(.activeTrack) .videoClip.selected{outline:none!important}
 .trackRow.activeTrack .audioClip{outline:2px solid #fff;outline-offset:-2px}
 
-/* Keep the left side compact. The only spare scrolling space is after the media so the end can reach the playhead. */
 @media(max-width:900px){
-  .timelineCanvas{padding-right:calc(100% - 74px)!important}
-  .fixedPlayhead{left:74px!important}
+  .canvasWrap{max-width:100%!important;max-height:100%!important}
+  .previewCanvas{max-width:100%!important;max-height:100%!important}
 }
