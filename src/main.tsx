@@ -3,6 +3,11 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './styles.css'
 import './editor.css'
+import './timelineEnhancements.css'
+import { installTimelineEnhancements } from './timelineEnhancements'
+
+const cleanupTimelineEnhancements = installTimelineEnhancements()
+window.addEventListener('beforeunload', cleanupTimelineEnhancements, { once: true })
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
