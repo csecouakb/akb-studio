@@ -14,6 +14,11 @@ export const installTimelineEnhancements = () => {
   let pinchStartWidth = 0
   let zoomFactor = 1
   let autoSelectedOnce = false
+  let holdTimer: number | null = null
+  let heldClip: HTMLElement | null = null
+  let holdStartX = 0
+  let holdStartY = 0
+  let dragLocked = false
 
   const refresh = () => {
     scroller = document.querySelector<HTMLDivElement>('.timelineScroller')
@@ -30,53 +35,71 @@ export const installTimelineEnhancements = () => {
 
   const onTouchStart = (event: TouchEvent) => {
     const targetScroller = (event.target as Element | null)?.closest<HTMLDivElement>('.timelineScroller')
-    if (!targetScroller || event.touches.length !== 2) return
+    if (!targetScroller) return
     refresh()
-    if (!canvas) return
-    pinchStartDistance = distance(event.touches)
-    pinchStartWidth = canvas.getBoundingClientRect().width
+
+    if (event.touches.length === 2 && canvas) {
+      pinchStartDistance = distance(event.touches)
+      pinchStartWidth = canvas.getBoundingClientRect().width
+      return
+    }
+
+    const clip = (event.target as Element | null)?.closest<HTMLElement>('.videoClip')
+    if (!clip || event.touches.length !== 1) return
+    const touch = event.touches[0]
+    heldClip = clip
+    holdStartX = touch.clientX
+    holdStartY = touch.clientY
+    holdTimer = window.setTimeout(() => {
+      dragLocked = true
+      scroller?.classList.add('dragLocked')
+      heldClip?.classList.add('dragUnlocked')
+      navigator.vibrate?.(25)
+    }, 400)
   }
 
   const onTouchMove = (event: TouchEvent) => {
-    if (!scroller || !canvas || event.touches.length !== 2 || !pinchStartDistance) return
-    const nextDistance = distance(event.touches)
-    if (!nextDistance) return
-    event.preventDefault()
-    const relative = nextDistance / pinchStartDistance
-    const nextFactor = clamp(zoomFactor * relative, 0.75, 4)
-    const baseWidth = pinchStartWidth / Math.max(zoomFactor, 0.001)
-    canvas.style.width = `${baseWidth * nextFactor}px`
-    scroller.dataset.pinchZoom = nextFactor.toFixed(3)
+    if (event.touches.length === 2 && scroller && canvas && pinchStartDistance) {
+      const nextDistance = distance(event.touches)
+      if (!nextDistance) return
+      event.preventDefault()
+      const relative = nextDistance / pinchStartDistance
+      const nextFactor = clamp(zoomFactor * relative, 0.75, 4)
+      const baseWidth = pinchStartWidth / Math.max(zoomFactor, 0.001)
+      canvas.style.width = `${baseWidth * nextFactor}px`
+      scroller.dataset.pinchZoom = nextFactor.toFixed(3)
+      return
+    }
+
+    if (!heldClip || event.touches.length !== 1) return
+    const touch = event.touches[0]
+    const moved = Math.hypot(touch.clientX - holdStartX, touch.clientY - holdStartY)
+    if (!dragLocked && moved > 8 && holdTimer !== null) {
+      window.clearTimeout(holdTimer)
+      holdTimer = null
+      heldClip = null
+      return
+    }
+    if (dragLocked) event.preventDefault()
+  }
+
+  const releaseHold = () => {
+    if (holdTimer !== null) window.clearTimeout(holdTimer)
+    holdTimer = null
+    dragLocked = false
+    scroller?.classList.remove('dragLocked')
+    heldClip?.classList.remove('dragUnlocked')
+    heldClip = null
   }
 
   const onTouchEnd = (event: TouchEvent) => {
-    if (!canvas || event.touches.length >= 2 || !pinchStartDistance) return
-    const value = Number(scroller?.dataset.pinchZoom)
-    if (Number.isFinite(value) && value > 0) zoomFactor = value
-    pinchStartDistance = 0
-    pinchStartWidth = 0
-  }
-
-  const onPointerDownCapture = (event: PointerEvent) => {
-    const audioClip = (event.target as Element | null)?.closest<HTMLButtonElement>('.audioClip')
-    if (!audioClip || event.pointerType === 'mouse') return
-    // On touch, prevent the current immediate-drag handler from moving audio by accident.
-    // A tap still reaches the row click and selects Audio; timeline swipes remain native pan-x.
-    const startX = event.clientX
-    const startY = event.clientY
-    let moved = false
-    const onMove = (moveEvent: PointerEvent) => {
-      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 7) moved = true
+    if (canvas && event.touches.length < 2 && pinchStartDistance) {
+      const value = Number(scroller?.dataset.pinchZoom)
+      if (Number.isFinite(value) && value > 0) zoomFactor = value
+      pinchStartDistance = 0
+      pinchStartWidth = 0
     }
-    const cleanup = () => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', cleanup, true)
-      window.removeEventListener('pointercancel', cleanup, true)
-    }
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', cleanup, true)
-    window.addEventListener('pointercancel', cleanup, true)
-    if (moved) event.stopPropagation()
+    if (event.touches.length === 0) releaseHold()
   }
 
   refresh()
@@ -86,14 +109,13 @@ export const installTimelineEnhancements = () => {
   document.addEventListener('touchmove', onTouchMove, { passive: false })
   document.addEventListener('touchend', onTouchEnd, { passive: true })
   document.addEventListener('touchcancel', onTouchEnd, { passive: true })
-  document.addEventListener('pointerdown', onPointerDownCapture, true)
 
   return () => {
     observer.disconnect()
+    releaseHold()
     document.removeEventListener('touchstart', onTouchStart)
     document.removeEventListener('touchmove', onTouchMove)
     document.removeEventListener('touchend', onTouchEnd)
     document.removeEventListener('touchcancel', onTouchEnd)
-    document.removeEventListener('pointerdown', onPointerDownCapture, true)
   }
 }
