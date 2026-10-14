@@ -40,6 +40,8 @@ export default function App() {
   const audioContextRef = useRef<AudioContext | null>(null)
   const bassNodeRef = useRef<BiquadFilterNode | null>(null)
   const trebleNodeRef = useRef<BiquadFilterNode | null>(null)
+  const vocalPresenceRef = useRef<BiquadFilterNode | null>(null)
+  const vocalHighPassRef = useRef<BiquadFilterNode | null>(null)
   const compressorRef = useRef<DynamicsCompressorNode | null>(null)
   const outputGainRef = useRef<GainNode | null>(null)
   const monitorGainRef = useRef<GainNode | null>(null)
@@ -106,6 +108,8 @@ export default function App() {
   const [bass, setBass] = useState(0)
   const [treble, setTreble] = useState(1)
   const [compression, setCompression] = useState(25)
+  const [vocalEnhancerEnabled, setVocalEnhancerEnabled] = useState(false)
+  const [vocalEnhancerAmount, setVocalEnhancerAmount] = useState(55)
   const [reverb, setReverb] = useState(0)
   const [echo, setEcho] = useState(0)
   const [bgColor, setBgColor] = useState('#111111')
@@ -166,16 +170,18 @@ export default function App() {
     const now = audioContextRef.current?.currentTime ?? 0
     bassNodeRef.current?.gain.setTargetAtTime(bass, now, 0.02)
     trebleNodeRef.current?.gain.setTargetAtTime(treble, now, 0.02)
+    vocalPresenceRef.current?.gain.setTargetAtTime(vocalEnhancerEnabled ? vocalEnhancerAmount * 0.045 : 0, now, 0.02)
+    if (vocalHighPassRef.current) vocalHighPassRef.current.frequency.setTargetAtTime(vocalEnhancerEnabled ? 75 : 20, now, 0.02)
     outputGainRef.current?.gain.setTargetAtTime(gain / 100 * originalAudioVolume / 100, now, 0.02)
     reverbGainRef.current?.gain.setTargetAtTime(reverb / 100, now, 0.02)
     echoGainRef.current?.gain.setTargetAtTime(echo / 100, now, 0.02)
     echoFeedbackRef.current?.gain.setTargetAtTime(Math.min(echo / 125, 0.68), now, 0.02)
     const compressor = compressorRef.current
     if (compressor) {
-      compressor.threshold.setTargetAtTime(-12 - compression * 0.2, now, 0.02)
-      compressor.ratio.setTargetAtTime(1 + compression * 0.055, now, 0.02)
+      compressor.threshold.setTargetAtTime(-12 - compression * 0.2 - (vocalEnhancerEnabled ? vocalEnhancerAmount * 0.06 : 0), now, 0.02)
+      compressor.ratio.setTargetAtTime(1 + compression * 0.055 + (vocalEnhancerEnabled ? vocalEnhancerAmount * 0.02 : 0), now, 0.02)
     }
-  }, [gain, bass, treble, compression, reverb, echo, originalAudioVolume])
+  }, [gain, bass, treble, compression, reverb, echo, originalAudioVolume, vocalEnhancerEnabled, vocalEnhancerAmount])
 
   useEffect(() => {
     if (replacementAudioRef.current) replacementAudioRef.current.volume = replacementAudioVolume / 100
@@ -304,9 +310,11 @@ export default function App() {
       if (!AudioContextClass) return
       const context = new AudioContextClass()
       const source = context.createMediaElementSource(video)
+      const highPass = context.createBiquadFilter(); highPass.type = 'highpass'; highPass.frequency.value = vocalEnhancerEnabled ? 75 : 20; highPass.Q.value = 0.7
       const bassNode = context.createBiquadFilter(); bassNode.type = 'lowshelf'; bassNode.frequency.value = 180
       const trebleNode = context.createBiquadFilter(); trebleNode.type = 'highshelf'; trebleNode.frequency.value = 3500
-      const compressor = context.createDynamicsCompressor(); compressor.attack.value = 0.012; compressor.release.value = 0.22; compressor.knee.value = 16
+      const vocalPresence = context.createBiquadFilter(); vocalPresence.type = 'peaking'; vocalPresence.frequency.value = 3000; vocalPresence.Q.value = 0.9; vocalPresence.gain.value = vocalEnhancerEnabled ? vocalEnhancerAmount * 0.045 : 0
+      const compressor = context.createDynamicsCompressor(); compressor.threshold.value = -12 - compression * 0.2 - (vocalEnhancerEnabled ? vocalEnhancerAmount * 0.06 : 0); compressor.ratio.value = 1 + compression * 0.055 + (vocalEnhancerEnabled ? vocalEnhancerAmount * 0.02 : 0); compressor.attack.value = 0.012; compressor.release.value = 0.22; compressor.knee.value = 16
       const dryGain = context.createGain()
       const convolver = context.createConvolver(); convolver.buffer = createImpulse(context, 2.2, 2.8)
       const reverbGain = context.createGain()
@@ -317,7 +325,7 @@ export default function App() {
       const limiter = context.createDynamicsCompressor(); limiter.threshold.value = -1.5; limiter.ratio.value = 20; limiter.attack.value = .003; limiter.release.value = .09; limiter.knee.value = 2
       const monitorGain = context.createGain()
       const exportAudio = context.createMediaStreamDestination()
-      source.connect(bassNode).connect(trebleNode).connect(compressor)
+      source.connect(highPass).connect(bassNode).connect(trebleNode).connect(vocalPresence).connect(compressor)
       compressor.connect(dryGain).connect(outputGain)
       compressor.connect(convolver).connect(reverbGain).connect(outputGain)
       compressor.connect(delay).connect(echoGain).connect(outputGain)
@@ -325,7 +333,7 @@ export default function App() {
       outputGain.connect(limiter)
       limiter.connect(monitorGain).connect(context.destination)
       limiter.connect(exportAudio)
-      audioContextRef.current = context; bassNodeRef.current = bassNode; trebleNodeRef.current = trebleNode; compressorRef.current = compressor
+      audioContextRef.current = context; vocalHighPassRef.current = highPass; bassNodeRef.current = bassNode; trebleNodeRef.current = trebleNode; vocalPresenceRef.current = vocalPresence; compressorRef.current = compressor
       outputGainRef.current = outputGain; monitorGainRef.current = monitorGain; reverbGainRef.current = reverbGain; echoGainRef.current = echoGain; echoFeedbackRef.current = echoFeedback
       exportAudioRef.current = exportAudio
       dryGain.gain.value = 1; reverbGain.gain.value = reverb / 100; echoGain.gain.value = echo / 100; echoFeedback.gain.value = Math.min(echo / 125, 0.68)
@@ -579,7 +587,7 @@ export default function App() {
       const videoSource = new CanvasSource(canvas, { codec: 'avc', quality: new Quality({ bitrate: exportQuality === 1080 ? 18_000_000 : 10_000_000, bitrateMode: 'variable' }), keyFrameInterval: 2 })
       output.addVideoTrack(videoSource, { frameRate: 30 })
 
-      const processedAudio = await renderExportAudio(sourceFile, segments, speed, { gain, bass, treble, compression, reverb, echo, originalVolume: originalAudioVolume }, replacementAudioFile, { start: replacementAudioStart, offset: replacementAudioOffset, volume: replacementAudioVolume })
+      const processedAudio = await renderExportAudio(sourceFile, segments, speed, { gain, bass, treble, compression, reverb, echo, originalVolume: originalAudioVolume, vocalEnhancerEnabled, vocalEnhancerAmount }, replacementAudioFile, { start: replacementAudioStart, offset: replacementAudioOffset, volume: replacementAudioVolume })
       const audioSource = processedAudio ? new AudioBufferSource({ codec: 'aac', quality: new Quality('high') }) : null
       if (audioSource) output.addAudioTrack(audioSource)
       await output.start()
@@ -698,7 +706,7 @@ export default function App() {
           {tab === 'edit' && cropApplied && <button className="secondary" onClick={() => setCropApplied(false)}>Edit crop area</button>}
           {tab === 'edit' && <><section className="card"><h2>Selected video clip</h2><p>{sourceSize.width ? `${sourceSize.width} × ${sourceSize.height}. ` : ''}Tap a clip for its tools. Hold it for 400ms before dragging to reorder.</p></section><div className="timelineActions"><button className="secondary" disabled={!videoUrl} onClick={splitAtPlayhead}><Scissors size={16}/>Split</button><button className="secondary danger" disabled={segments.length <= 1} onClick={deleteSelected}><Trash2 size={16}/>Delete</button><button className={magnet ? 'secondary activeTool' : 'secondary'} onClick={() => setMagnet(value => !value)}><Magnet size={16}/>Magnet</button></div><div className="trimReadout"><span>Start <b>{formatTime(trimStart)}</b></span><span>End <b>{formatTime(trimEnd)}</b></span></div><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(Math.min(currentTime, Math.max(0, trimEnd - 0.1)), trimEnd)}>Set start</button><button className="secondary" disabled={!videoUrl} onClick={() => updateSelectedSegment(trimStart, Math.min(duration, Math.max(currentTime, trimStart + 0.1)))}>Set end</button></div><label className="field">Canvas<select value={aspect} onChange={event => changeAspect(event.target.value as AspectRatio)}><option>Original</option><option>9:16</option><option>16:9</option><option>1:1</option><option>4:5</option><option>Custom</option></select></label>{aspect === 'Custom' && <div className="customSize"><input type="number" min="240" max="3840" value={customWidth} onChange={event => setCustomWidth(Number(event.target.value))}/><span>×</span><input type="number" min="240" max="3840" value={customHeight} onChange={event => setCustomHeight(Number(event.target.value))}/></div>}<Slider label="Speed" value={speed} setValue={setSpeed} min={0.5} max={2} step={0.05} suffix="×"/><label className="field">Rotate <button className="iconButton" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCcw size={18}/>{rotation}°</button></label></>}
           {tab === 'filter' && <><section className="card"><h2>Visual adjustments</h2><p>Mystery Blur keeps you visibly singing while gently softening facial detail, so attention stays on the voice.</p></section><div className="presetGrid compact">{filterPresets.map(preset => <button key={preset} className={filterPreset === preset ? 'selected' : ''} onClick={() => setFilterPreset(preset)}>{preset}</button>)}</div>{filterPreset === 'Mystery Blur' && <Slider label="Mystery blur" value={blurStrength} setValue={setBlurStrength} min={1} max={14} suffix=" px"/>}<Slider label="Brightness" value={brightness} setValue={setBrightness} min={50} max={150}/><Slider label="Contrast" value={contrast} setValue={setContrast} min={50} max={150}/><Slider label="Saturation" value={saturation} setValue={setSaturation} min={0} max={180}/><button className="secondary" onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); setBlurStrength(5); setFilterPreset('None') }}>Reset adjustments</button></>}
-          {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Audio tracks</h2><p>Mute the camera audio or mix a separate song, vocal or mastered track at an exact timeline position.</p></section><Slider label="Original video audio" value={originalAudioVolume} setValue={setOriginalAudioVolume} min={0} max={100} suffix="%"/><button className={originalAudioVolume === 0 ? 'secondary activeTool' : 'secondary'} onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}>{originalAudioVolume === 0 ? 'Unmute original audio' : 'Mute original audio'}</button><label className="secondary uploadBg"><Volume2 size={16}/>Import replacement audio<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>{replacementAudioFile && <section className="card audioTrackCard"><h2>{replacementAudioName}</h2><p>{formatTime(replacementAudioDuration)} audio placed at {formatTime(replacementAudioStart)}</p><button className="secondary" onClick={() => setReplacementAudioStart(getEditedTimelineTime(currentTime))}>Place at playhead</button><Slider label="Timeline start" value={replacementAudioStart} setValue={setReplacementAudioStart} min={0} max={Math.max(.1, segments.reduce((sum, item) => sum + item.end - item.start, 0) / speed)} step={.05} suffix=" s"/><Slider label="Start audio from" value={replacementAudioOffset} setValue={setReplacementAudioOffset} min={0} max={Math.max(.1, replacementAudioDuration)} step={.05} suffix=" s"/><Slider label="Imported audio volume" value={replacementAudioVolume} setValue={setReplacementAudioVolume} min={0} max={150} suffix="%"/><button className="secondary danger" onClick={() => { replacementAudioRef.current?.pause(); URL.revokeObjectURL(replacementAudioUrl); setReplacementAudioFile(null); setReplacementAudioUrl(''); setReplacementAudioName('') }}>Remove imported audio</button></section>}<section className="card"><h2><Mic2 size={17}/>Voice Studio</h2><p>Natural singing presets use EQ, compression and local reverb on the original video audio.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
+          {tab === 'voice' && <><section className="card"><h2><Volume2 size={17}/>Audio tracks</h2><p>Mute the camera audio or mix a separate song, vocal or mastered track at an exact timeline position.</p></section><Slider label="Original video audio" value={originalAudioVolume} setValue={setOriginalAudioVolume} min={0} max={100} suffix="%"/><button className={originalAudioVolume === 0 ? 'secondary activeTool' : 'secondary'} onClick={() => setOriginalAudioVolume(value => value === 0 ? 100 : 0)}>{originalAudioVolume === 0 ? 'Unmute original audio' : 'Mute original audio'}</button><label className="secondary uploadBg"><Volume2 size={16}/>Import replacement audio<input type="file" accept="audio/*" onChange={importReplacementAudio}/></label>{replacementAudioFile && <section className="card audioTrackCard"><h2>{replacementAudioName}</h2><p>{formatTime(replacementAudioDuration)} audio placed at {formatTime(replacementAudioStart)}</p><button className="secondary" onClick={() => setReplacementAudioStart(getEditedTimelineTime(currentTime))}>Place at playhead</button><Slider label="Timeline start" value={replacementAudioStart} setValue={setReplacementAudioStart} min={0} max={Math.max(.1, segments.reduce((sum, item) => sum + item.end - item.start, 0) / speed)} step={.05} suffix=" s"/><Slider label="Start audio from" value={replacementAudioOffset} setValue={setReplacementAudioOffset} min={0} max={Math.max(.1, replacementAudioDuration)} step={.05} suffix=" s"/><Slider label="Imported audio volume" value={replacementAudioVolume} setValue={setReplacementAudioVolume} min={0} max={150} suffix="%"/><button className="secondary danger" onClick={() => { replacementAudioRef.current?.pause(); URL.revokeObjectURL(replacementAudioUrl); setReplacementAudioFile(null); setReplacementAudioUrl(''); setReplacementAudioName('') }}>Remove imported audio</button></section>}<section className="card"><h2><Mic2 size={17}/>Basic Vocal Enhancer</h2><p>Light presence EQ, low-rumble reduction and gentle compression. Works locally on the original audio, with no AI or stem separation.</p><label className="toggleRow"><input type="checkbox" checked={vocalEnhancerEnabled} onChange={event => setVocalEnhancerEnabled(event.target.checked)}/><span>Enable Basic Vocal Enhancer</span></label>{vocalEnhancerEnabled && <Slider label="Enhancement strength" value={vocalEnhancerAmount} setValue={setVocalEnhancerAmount} min={0} max={100} suffix="%"/>}</section><section className="card"><h2><Mic2 size={17}/>Voice Studio</h2><p>Natural singing presets use EQ, compression and local reverb on the original video audio.</p></section><div className="presetGrid">{voicePresets.map(preset => <button key={preset} className={voicePreset === preset ? 'selected' : ''} onClick={() => void chooseVoicePreset(preset)}>{preset}</button>)}</div><Slider label="Loudness" value={gain} setValue={setGain} min={50} max={150} suffix="%"/><Slider label="Bass" value={bass} setValue={setBass} min={-10} max={10} suffix=" dB"/><Slider label="Treble" value={treble} setValue={setTreble} min={-10} max={10} suffix=" dB"/><Slider label="Compression" value={compression} setValue={setCompression} min={0} max={100} suffix="%"/><Slider label="Reverb" value={reverb} setValue={setReverb} min={0} max={70} suffix="%"/><Slider label="Echo" value={echo} setValue={setEcho} min={0} max={65} suffix="%"/></>}
           {tab === 'background' && <><section className="card"><h2>Background replacement</h2><p>Changes appear instantly in the preview. Auto Detect samples the corners; Pick Color lets you tap the background.</p></section><div className="buttonRow"><button className="secondary" disabled={!videoUrl} onClick={autoDetectBackground}>Auto Detect</button><button className={pickingColor ? 'secondary activeTool' : 'secondary'} disabled={!videoUrl} onClick={() => setPickingColor(value => !value)}>Pick Color</button></div><label className="toggleRow"><input type="checkbox" checked={chromaEnabled} onChange={event => setChromaEnabled(event.target.checked)}/><span>Enable chroma key</span></label>{chromaEnabled && <><label className="toggleRow"><input type="checkbox" checked={protectSkin} onChange={event => setProtectSkin(event.target.checked)}/><span>Protect face and skin</span></label><label className="field">Remove color<input type="color" value={chromaColor} onChange={event => setChromaColor(event.target.value)}/></label><Slider label="Color tolerance" value={chromaThreshold} setValue={setChromaThreshold} min={10} max={140}/></>}<label className="field">New background color<input type="color" value={bgColor} onChange={event => setBgColor(event.target.value)}/></label><label className="secondary uploadBg">Choose background image<input type="file" accept="image/*" onChange={importBackground}/></label>{bgImage && <button className="secondary" onClick={() => { URL.revokeObjectURL(bgImage); setBgImage('') }}>Remove image</button>}</>}
         </div>
       </aside>
@@ -706,7 +714,7 @@ export default function App() {
   </main>
 }
 
-async function renderExportAudio(file: File, segments: Segment[], speed: number, settings: { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number; originalVolume: number }, replacementFile: File | null, replacement: { start: number; offset: number; volume: number }) {
+async function renderExportAudio(file: File, segments: Segment[], speed: number, settings: { gain: number; bass: number; treble: number; compression: number; reverb: number; echo: number; originalVolume: number; vocalEnhancerEnabled: boolean; vocalEnhancerAmount: number }, replacementFile: File | null, replacement: { start: number; offset: number; volume: number }) {
   const DecodeContext = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
   if (!DecodeContext) return null
   const decoder = new DecodeContext()
@@ -719,9 +727,11 @@ async function renderExportAudio(file: File, segments: Segment[], speed: number,
   const outputDuration = segments.reduce((sum, segment) => sum + (segment.end - segment.start) / speed, 0)
   const sampleRate = Math.min(48000, decoded.sampleRate)
   const offline = new OfflineAudioContext(Math.min(2, Math.max(decoded.numberOfChannels, replacementDecoded?.numberOfChannels || 0)), Math.max(1, Math.ceil(outputDuration * sampleRate)), sampleRate)
+  const highPass = offline.createBiquadFilter(); highPass.type = 'highpass'; highPass.frequency.value = settings.vocalEnhancerEnabled ? 75 : 20; highPass.Q.value = 0.7
   const bassNode = offline.createBiquadFilter(); bassNode.type = 'lowshelf'; bassNode.frequency.value = 180; bassNode.gain.value = settings.bass
   const trebleNode = offline.createBiquadFilter(); trebleNode.type = 'highshelf'; trebleNode.frequency.value = 3500; trebleNode.gain.value = settings.treble
-  const compressor = offline.createDynamicsCompressor(); compressor.threshold.value = -12 - settings.compression * .2; compressor.ratio.value = 1 + settings.compression * .055; compressor.attack.value = .012; compressor.release.value = .22; compressor.knee.value = 16
+  const vocalPresence = offline.createBiquadFilter(); vocalPresence.type = 'peaking'; vocalPresence.frequency.value = 3000; vocalPresence.Q.value = 0.9; vocalPresence.gain.value = settings.vocalEnhancerEnabled ? settings.vocalEnhancerAmount * 0.045 : 0
+  const compressor = offline.createDynamicsCompressor(); compressor.threshold.value = -12 - settings.compression * .2 - (settings.vocalEnhancerEnabled ? settings.vocalEnhancerAmount * .06 : 0); compressor.ratio.value = 1 + settings.compression * .055 + (settings.vocalEnhancerEnabled ? settings.vocalEnhancerAmount * .02 : 0); compressor.attack.value = .012; compressor.release.value = .22; compressor.knee.value = 16
   const dryGain = offline.createGain(); dryGain.gain.value = 1
   const convolver = offline.createConvolver(); convolver.buffer = createImpulse(offline, 2.2, 2.8)
   const reverbGain = offline.createGain(); reverbGain.gain.value = settings.reverb / 100
@@ -730,7 +740,7 @@ async function renderExportAudio(file: File, segments: Segment[], speed: number,
   const echoFeedback = offline.createGain(); echoFeedback.gain.value = Math.min(settings.echo / 125, .68)
   const outputGain = offline.createGain(); outputGain.gain.value = settings.gain / 100 * settings.originalVolume / 100
   const masterLimiter = offline.createDynamicsCompressor(); masterLimiter.threshold.value = -1.5; masterLimiter.ratio.value = 20; masterLimiter.attack.value = .003; masterLimiter.release.value = .09; masterLimiter.knee.value = 2
-  bassNode.connect(trebleNode).connect(compressor)
+  highPass.connect(bassNode).connect(trebleNode).connect(vocalPresence).connect(compressor)
   compressor.connect(dryGain).connect(outputGain)
   compressor.connect(convolver).connect(reverbGain).connect(outputGain)
   compressor.connect(delay).connect(echoGain).connect(outputGain)
@@ -738,7 +748,7 @@ async function renderExportAudio(file: File, segments: Segment[], speed: number,
   outputGain.connect(masterLimiter).connect(offline.destination)
   let offset = 0
   for (const segment of segments) {
-    const source = offline.createBufferSource(); source.buffer = decoded; source.playbackRate.value = speed; source.connect(bassNode)
+    const source = offline.createBufferSource(); source.buffer = decoded; source.playbackRate.value = speed; source.connect(highPass)
     const sourceDuration = Math.max(0, Math.min(decoded.duration, segment.end) - Math.max(0, segment.start))
     if (sourceDuration > 0) source.start(offset, Math.max(0, segment.start), sourceDuration)
     offset += sourceDuration / speed
